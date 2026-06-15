@@ -1,0 +1,44 @@
+# Visual Studio build output
+x64/
+Debug/
+Release/
+
+# Visual Studio IDE state (not source)
+.vs/
+*.user
+*.suo
+*.aps
+*.ncb
+*.opendb
+*.sdf
+*.opensdf
+
+# VS IntelliSense/browse database cache folders (named ProjectName.GUID)
+OthelloL.*/
+OthelloBasics/OthelloBasics/
+OthelloBasicsForCUDA/OthelloB.*/
+
+# CUDA build intermediates
+*.cubin
+*.fatbin
+*.ptx
+
+# Compiled output that ends up outside x64/ for any reason
+*.obj
+*.pdb
+*.lib
+*.exp
+*.exe
+*.dll
+*.ilk
+
+# VS "new CUDA project" template stub (has its own main(), not part of the build)
+kernel.cu
+
+# Log files produced at runtime
+*.log
+*.log.*
+
+# Runtime data directories (on other drives)
+# C:\OthelloLevelBlaster\Cache  -- not in this repo anyway
+# Y:\OthelloLevelBlaster\Store  -- not in this repo anyway

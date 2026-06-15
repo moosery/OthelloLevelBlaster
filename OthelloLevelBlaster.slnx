@@ -1,0 +1,11 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+  </Configurations>
+  <Project Path="BPlusTreeHybrid/BPlusTreeHybrid.vcxproj" Id="7f9f0d90-47d0-4095-ad76-23e35d2da5c8" />
+  <Project Path="OthelloBasics/OthelloBasics.vcxproj" Id="2cc52c70-80f3-4700-9e46-0f6b1c077667" />
+  <Project Path="OthelloBasicsForCUDA/OthelloBasicsForCUDA.vcxproj" Id="375f3354-bf89-48cd-8405-d660fa4a3983" />
+  <Project Path="OthelloLevelBlaster.vcxproj" />
+  <Project Path="OthelloLevelBlasterStatus/OthelloLevelBlasterStatus.vcxproj" Id="a1b2c3d4-e5f6-7890-abcd-ef1234567890" />
+  <Project Path="Utility/Utility.vcxproj" Id="1ff99cce-54c7-4bc7-b3bb-94ceae7e93a1" />
+</Solution>

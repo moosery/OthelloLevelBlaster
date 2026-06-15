@@ -1,0 +1,286 @@
+#include "InitLogger.h"
+#include "InitSolver.h"
+#include "CreateSeedFile.h"
+#include "LevelSolverThread.h"
+#include "MergeFiles.h"
+#include "StatsListener.h"
+#include <windows.h>
+#include <ctype.h>
+
+OthelloLevelBlasterConfig g_config      = {};
+OthelloLevelBlasterState  g_state       = {};
+MachineInfo               g_machineInfo = {};
+
+// ============================================================================
+// Command-line argument parsing
+// ============================================================================
+
+static void PrintUsage(const char* prog)
+{
+    printf("Usage: %s [options]\n\n", prog);
+    printf("  --board-size N    Board size (e.g. 4 for 4x4, 6 for 6x6)  [default: 4]\n");
+    printf("  --drives LETTERS  Drive letters to use, e.g. DEFZ           [default: DEFZ]\n");
+    printf("  --store-drive L   Drive letter for NAS/store output          [default: Z]\n");
+    printf("  --store-dir PATH  Sub-path on store drive (no drive letter)  [default: \\OthelloLevelBlaster\\Store]\n");
+    printf("  --cache-dir PATH  Full path for logs and drive-bench cache   [default: C:\\OthelloLevelBlaster\\Cache]\n");
+    printf("  --port N          Stats listener TCP port                    [default: 17432]\n");
+    printf("  --help            Show this help\n\n");
+}
+
+static void ParseArgs(int argc, char* argv[])
+{
+    // Defaults
+    g_config.boardSize  = 6;
+    g_config.storeDrive = 'Y';
+    g_config.statsPort  = 17432;
+    strncpy(g_config.useDrives,           "DEFY",                           sizeof(g_config.useDrives)           - 1);
+    strncpy(g_config.cacheDirName,        "C:\\OthelloLevelBlaster\\Cache",  sizeof(g_config.cacheDirName)        - 1);
+    strncpy(g_config.storeDirNameNoDrive, "\\OthelloLevelBlaster\\Store",    sizeof(g_config.storeDirNameNoDrive) - 1);
+
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0)
+        {
+            PrintUsage(argv[0]);
+            exit(0);
+        }
+
+#define REQUIRE_NEXT(flag) \
+        if (++i >= argc) { printf("ERROR: %s requires a value\n", flag); exit(1); }
+
+        if (strcmp(argv[i], "--board-size") == 0)
+        {
+            REQUIRE_NEXT("--board-size")
+            int n = atoi(argv[i]);
+            if (n < 2 || n > 12) { printf("ERROR: --board-size must be 2..12\n"); exit(1); }
+            g_config.boardSize = (uint8_t)n;
+        }
+        else if (strcmp(argv[i], "--drives") == 0)
+        {
+            REQUIRE_NEXT("--drives")
+            strncpy(g_config.useDrives, argv[i], sizeof(g_config.useDrives) - 1);
+        }
+        else if (strcmp(argv[i], "--store-drive") == 0)
+        {
+            REQUIRE_NEXT("--store-drive")
+            g_config.storeDrive = (char)toupper((unsigned char)argv[i][0]);
+        }
+        else if (strcmp(argv[i], "--store-dir") == 0)
+        {
+            REQUIRE_NEXT("--store-dir")
+            strncpy(g_config.storeDirNameNoDrive, argv[i], sizeof(g_config.storeDirNameNoDrive) - 1);
+        }
+        else if (strcmp(argv[i], "--cache-dir") == 0)
+        {
+            REQUIRE_NEXT("--cache-dir")
+            strncpy(g_config.cacheDirName, argv[i], sizeof(g_config.cacheDirName) - 1);
+        }
+        else if (strcmp(argv[i], "--port") == 0)
+        {
+            REQUIRE_NEXT("--port")
+            g_config.statsPort = (uint16_t)atoi(argv[i]);
+        }
+        else
+        {
+            printf("ERROR: unknown argument '%s'\n\n", argv[i]);
+            PrintUsage(argv[0]);
+            exit(1);
+        }
+
+#undef REQUIRE_NEXT
+    }
+}
+
+static BOOL WINAPI CtrlHandler(DWORD dwCtrlType)
+{
+    if (dwCtrlType == CTRL_C_EVENT || dwCtrlType == CTRL_BREAK_EVENT)
+    {
+        LoggerLog("Ctrl+C received - requesting graceful shutdown...\n");
+        g_state.terminateThreads = true;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void WaitForPoolIdle(ThreadPool* pPool)
+{
+    while (pPool->IsBusy())
+        Sleep(1);
+}
+
+// ============================================================================
+// Per-level summary line
+//
+// Columns (matching OLE layout where possible):
+//   Lv  BoardsIn  NewBoards  Pass  GpuDups  MrgDups  UniqueOut  Ends  Fls
+//   SlvGB  MrgGB  SlvTm  MrgTm  TotTm  ns/brd  DateTime
+// ============================================================================
+
+static void PrintLevelStatsHeader()
+{
+    LoggerLog(
+        "\n  Lv    BoardsIn   NewBoards      Pass   GpuDups   MrgDups  UniqueOut"
+        "    Ends  MaxMv   Fls    SlvGB    MrgGB   SlvTm(s)   MrgTm(s)   TotTm(s)"
+        "      SlvNs/b       MrgNs/b       TotNs/b  DateTime\n"
+        "  --  ----------  ----------  --------  --------  --------  ---------"
+        "  ------  -----  ----  -------  -------  ---------  ---------  ---------"
+        "  ------------  ------------  ------------  -------------------\n"
+    );
+}
+
+static void LogLevelSummary(int level, PSolveContext pCtx)
+{
+    POthelloLevelBlasterState pSt = pCtx->pState;
+    const LevelStats*         ls  = &pSt->levelStats[level];
+
+    uint64_t uniqueOut = (ls->boardsWrittenToDisk >= ls->mrgDupsRemoved)
+                         ? ls->boardsWrittenToDisk - ls->mrgDupsRemoved : 0;
+    double   slvTm     = ls->solverNanos / 1.0e9;
+    double   mrgTm     = (ls->totalNanos - ls->solverNanos) / 1.0e9;
+    double   totTm     = ls->totalNanos  / 1.0e9;
+    uint64_t brdCount  = ls->boardsReadFromStore > 0 ? ls->boardsReadFromStore : 1;
+    uint64_t slvNsBrd  = (uint64_t)(ls->solverNanos / (int64_t)brdCount);
+    uint64_t mrgNsBrd  = (uint64_t)((ls->totalNanos - ls->solverNanos) / (int64_t)brdCount);
+    uint64_t totNsBrd  = (uint64_t)(ls->totalNanos  / (int64_t)brdCount);
+    double   slvGB     = ls->mwBytes    / (1024.0 * 1024.0 * 1024.0);
+    double   mrgGB     = ls->mergeBytes / (1024.0 * 1024.0 * 1024.0);
+
+    LoggerLog(
+        "  %2d  %10llu  %10llu  %8llu  %8llu  %8llu  %9llu"
+        "  %6llu  %5u  %4llu  %7.2f  %7.2f  %9.3f  %9.3f  %9.3f"
+        "  %12llu  %12llu  %12llu  %s\n",
+        level,
+        (unsigned long long)(ls->boardsReadFromStore + ls->passBoards),
+        (unsigned long long)ls->boardsGenerated,
+        (unsigned long long)ls->passBoards,
+        (unsigned long long)ls->gpuDupsRemoved,
+        (unsigned long long)ls->mrgDupsRemoved,
+        (unsigned long long)uniqueOut,
+        (unsigned long long)ls->terminalBoards,
+        ls->maxMovesInLevel,
+        (unsigned long long)ls->gpuFlushes,
+        slvGB, mrgGB,
+        slvTm, mrgTm, totTm,
+        (unsigned long long)slvNsBrd,
+        (unsigned long long)mrgNsBrd,
+        (unsigned long long)totNsBrd,
+        ls->completedAt
+    );
+
+    // Per-drive breakdown from snapshot captured at level completion
+    for (int i = 0; i < ls->numDriveSnapshot; i++)
+    {
+        const WriterDriveStats* d = &ls->driveSnapshot[i];
+        LoggerLog("      %c:  files=%llu  %.2f GB  free=%.2f GB\n",
+                  d->driveLetter,
+                  (unsigned long long)d->levelFilesWritten,
+                  d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
+                  d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0));
+    }
+    LoggerLog("      %c:  files=%d  %.2f GB  free=%.2f GB\n",
+              pCtx->pConfig->storeDrive,
+              ls->mergeBytes > 0 ? 1 : 0,
+              ls->mergeBytes   / (1024.0 * 1024.0 * 1024.0),
+              ls->storeFreeBytes / (1024.0 * 1024.0 * 1024.0));
+    LoggerLog("\n");
+}
+
+int main(int argc, char* argv[])
+{
+    ParseArgs(argc, argv);
+    SetConsoleCtrlHandler(CtrlHandler, TRUE);
+    InitLogger(&g_config, &g_state);
+    InitSolver(&g_config, &g_state, &g_machineInfo);
+    CreateSeedFile(&g_config, &g_state);
+
+    SolveContext ctx = { &g_config, &g_state, &g_machineInfo };
+    SubmitStatsListenerJob(&ctx);
+
+    // 4 pieces are pre-placed at game start; each level adds one piece.
+    // The last level (all squares filled) generates no children but counts terminal boards.
+    const int maxLevel = g_config.boardSize * g_config.boardSize - 3;
+
+    PrintLevelStatsHeader();
+
+    for (int level = 0; level < maxLevel && !g_state.terminateThreads; level++)
+    {
+        g_state.playLevel = (uint8_t)level;
+
+        // Reset per-level per-thread state
+        for (int i = 0; i < g_state.numMergeWriters; i++)
+            g_state.mwFileCount[i] = 0;
+        for (int i = 0; i < g_state.numMergeDirs; i++)
+            g_state.mergeFileCount[i] = 0;
+        for (int i = 0; i < g_state.numWriterDrives; i++)
+        {
+            g_state.writerDriveStats[i].levelFilesWritten = 0;
+            g_state.writerDriveStats[i].levelBytesWritten = 0;
+        }
+        g_state.levelStats[level] = {};
+        ClockStart(&g_state.levelStats[level].startTick);
+
+        g_state.currentPhase = "GPU solving";
+        SubmitGpuFeederJob(&ctx, (uint8_t)level);
+        WaitForPoolIdle(g_state.pGPUFeederThreadPool);
+
+        // Drain any merge-writer jobs still in flight, then flush remaining buffer segments
+        WaitForPoolIdle(g_state.pMergeWriterPool);
+        if (!g_state.terminateThreads)
+        {
+            g_state.currentPhase = "Flushing buffers";
+            FlushAllMergeWriterBuffers(&ctx);
+        }
+        g_state.levelStats[level].solverNanos =
+            ClockNanosSinceStart(&g_state.levelStats[level].startTick);
+
+        if (!g_state.terminateThreads)
+        {
+            // Consolidate all NVMe writer files + HDD merge files → single store file on Y:
+            g_state.currentPhase = "Merging to store";
+            DoEndOfLevelMerge(&ctx);
+            g_state.levelStats[level].totalNanos =
+                ClockNanosSinceStart(&g_state.levelStats[level].startTick);
+
+            {
+                char storeRoot[4] = { g_config.storeDrive, ':', '\\', '\0' };
+                ULARGE_INTEGER freeAvail = {};
+                GetDiskFreeSpaceExA(storeRoot, &freeAvail, nullptr, nullptr);
+                g_state.levelStats[level].storeFreeBytes = freeAvail.QuadPart;
+            }
+
+            // Snapshot per-drive stats before they're reset at the next level's start
+            g_state.levelStats[level].numDriveSnapshot = g_state.numWriterDrives;
+            for (int i = 0; i < g_state.numWriterDrives; i++)
+                g_state.levelStats[level].driveSnapshot[i] = g_state.writerDriveStats[i];
+        }
+        else
+        {
+            g_state.levelStats[level].totalNanos =
+                ClockNanosSinceStart(&g_state.levelStats[level].startTick);
+        }
+
+        g_state.currentPhase = nullptr;
+
+        SYSTEMTIME _st = {};
+        GetLocalTime(&_st);
+        snprintf(g_state.levelStats[level].completedAt,
+                 sizeof(g_state.levelStats[level].completedAt),
+                 "%04d-%02d-%02d %02d:%02d:%02d",
+                 _st.wYear, _st.wMonth, _st.wDay,
+                 _st.wHour, _st.wMinute, _st.wSecond);
+
+        LogLevelSummary(level, &ctx);
+    }
+
+    // Print completed-level history table
+    if (g_state.playLevel > 0)
+    {
+        LoggerLog("\n--- Completed level history ---\n");
+        PrintLevelStatsHeader();
+        for (int lvl = 0; lvl <= (int)g_state.playLevel; lvl++)
+            LogLevelSummary(lvl, &ctx);
+    }
+
+    CleanupSolver(&g_state);
+    return 0;
+}
