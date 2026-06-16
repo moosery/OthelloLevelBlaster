@@ -4,6 +4,19 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.1.6] - 2026-06-16
+
+### Fixed
+- **Off-by-one in resume level** — `ScanForResumeLevel` returns the index of the
+  first *missing* store file (e.g. 18 when Level_0017 exists but Level_0018 does
+  not).  But iteration N *reads* Level_N and *writes* Level_N+1, so the correct
+  restart point is `firstMissingFile - 1` (17 in the example), not
+  `firstMissingFile` (18).  Starting at 18 would make the GPU feeder try to open
+  Level_0018 which does not exist.  Fixed at the call site:
+  `resumeLevel = (firstMissingFile > 0) ? firstMissingFile - 1 : 0`.
+
+---
+
 ## [0.1.5] - 2026-06-16
 
 ### Fixed

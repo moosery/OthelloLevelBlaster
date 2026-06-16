@@ -287,7 +287,11 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
 
     GetMachineInfo(pConfig->cacheDirName, pConfig->useDrives, pMachineInfo);
     computeState(pConfig, pState, pMachineInfo);
-    pState->resumeLevel = ScanForResumeLevel(pState);
+    // ScanForResumeLevel returns the index of the first missing store file.
+    // Iteration N reads Level_N and writes Level_N+1, so if Level_N+1 is the
+    // first missing file we need to re-run iteration N (= firstMissingFile - 1).
+    int firstMissingFile = ScanForResumeLevel(pState);
+    pState->resumeLevel  = (firstMissingFile > 0) ? firstMissingFile - 1 : 0;
     cleanUpDrives(pState, pMachineInfo);
     createDirectories(pState);
 
