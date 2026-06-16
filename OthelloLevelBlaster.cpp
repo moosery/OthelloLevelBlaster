@@ -18,13 +18,16 @@ MachineInfo               g_machineInfo = {};
 static void PrintUsage(const char* prog)
 {
     printf("Usage: %s [options]\n\n", prog);
-    printf("  --board-size N    Board size (e.g. 4 for 4x4, 6 for 6x6)  [default: 4]\n");
-    printf("  --drives LETTERS  Drive letters to use, e.g. DEFZ           [default: DEFZ]\n");
-    printf("  --store-drive L   Drive letter for NAS/store output          [default: Z]\n");
+    printf("  --board-size N    Board size (e.g. 4 for 4x4, 6 for 6x6)  [default: 6]\n");
+    printf("  --drives LETTERS  Drive letters to use, e.g. DEFY           [default: DEFY]\n");
+    printf("  --store-drive L   Drive letter for NAS/store output          [default: Y]\n");
     printf("  --store-dir PATH  Sub-path on store drive (no drive letter)  [default: \\OthelloLevelBlaster\\Store]\n");
     printf("  --cache-dir PATH  Full path for logs and drive-bench cache   [default: C:\\OthelloLevelBlaster\\Cache]\n");
     printf("  --port N          Stats listener TCP port                    [default: 17432]\n");
     printf("  --help            Show this help\n\n");
+    printf("Auto-resume: if storeDir already contains level files from a previous run,\n");
+    printf("  the solver automatically resumes from the first missing level.\n");
+    printf("  To start fresh, delete or move the storeDir manually.\n\n");
 }
 
 static void ParseArgs(int argc, char* argv[])

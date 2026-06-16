@@ -4,6 +4,20 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.1.4] - 2026-06-16
+
+### Fixed
+- **Stale defaults in `--help` output** — `--board-size`, `--drives`, and
+  `--store-drive` still showed the 0.1.0 defaults (4, DEFZ, Z) after those were
+  changed to 6, DEFY, Y in 0.1.1.
+
+### Added
+- **Auto-resume description in `--help`** — explains that the solver detects
+  existing level files and resumes automatically, and that deleting storeDir
+  manually triggers a fresh run.
+
+---
+
 ## [0.1.3] - 2026-06-16
 
 ### Added
