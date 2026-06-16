@@ -188,6 +188,18 @@ static void RunGpuFeederJob(uint32_t /*thdIdx*/, PSolveContext pCtx, uint8_t lev
 
     int numFiles = EnumerateLevelFiles(pSt->storeDirectory, level, levelFiles, kMaxFiles);
 
+    // Pre-scan files so StatsListener can show solve-phase % progress.
+    // BLFOpen only seeks to the trailer (cheap even on NAS).
+    {
+        uint64_t total = 0;
+        for (int fi = 0; fi < numFiles; fi++)
+        {
+            BLFReader* r = BLFOpen(levelFiles[fi]);
+            if (r) { total += BLFTrailer(r)->recordCount; BLFClose(&r); }
+        }
+        pSt->currentLevelTotalBoards = total;
+    }
+
     int slotIdx = 0;
 
     for (int fi = 0; fi < numFiles && !pSt->terminateThreads; fi++)

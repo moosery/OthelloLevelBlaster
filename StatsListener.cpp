@@ -147,7 +147,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
     {
         char curDur[16];
         FormatDuration(elapsedNanos, curDur, sizeof(curDur));
-        char phaseStr[20] = "[running]";
+        char phaseStr[24] = "[running]";
         if (curDone)
             snprintf(phaseStr, sizeof(phaseStr), "[done]");
         else if (pSt->currentPhase
@@ -159,6 +159,12 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
         else if (pSt->currentPhase
                  && strcmp(pSt->currentPhase, "Flushing buffers") == 0)
             snprintf(phaseStr, sizeof(phaseStr), "[flushing]");
+        else if (pSt->currentPhase
+                 && strcmp(pSt->currentPhase, "GPU solving") == 0
+                 && pSt->currentLevelTotalBoards > 0)
+            snprintf(phaseStr, sizeof(phaseStr), "[solve%5.1f%%]",
+                     100.0 * (double)cur->boardsReadFromStore
+                           / (double)pSt->currentLevelTotalBoards);
         n += snprintf(buf + n, bufSize - n,
                       "%3d  %13llu  %13llu  %12llu  %12llu  %13llu  %9.2f  %8s  %s\n",
                       curLevel,

@@ -221,7 +221,8 @@ int main(int argc, char* argv[])
             g_state.mwFileCount[i] = 0;
         for (int i = 0; i < g_state.numMergeDirs; i++)
             g_state.mergeFileCount[i] = 0;
-        g_state.storeMergeFileCount = 0;
+        g_state.storeMergeFileCount     = 0;
+        g_state.currentLevelTotalBoards = 0;
         for (int i = 0; i < g_state.numWriterDrives; i++)
         {
             g_state.writerDriveStats[i].levelFilesWritten = 0;

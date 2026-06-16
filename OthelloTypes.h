@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.1.7"
+#define VERSION           "0.1.8"
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
@@ -81,8 +81,9 @@ typedef struct __OthelloLevelBlasterState
     bool        terminateThreads;
     bool        terminateStatsListener;
     const char* currentPhase;       // points to a string literal; set by main thread at each phase transition
-    uint64_t    mergeProgressBytes;    // bytes written to final merge output so far (main thread writes, stats thread reads)
-    uint64_t    mergeTotalInputBytes;  // total input bytes for the current end-of-level merge
+    uint64_t    mergeProgressBytes;      // bytes written to final merge output so far (main thread writes, stats thread reads)
+    uint64_t    mergeTotalInputBytes;    // total input bytes for the current end-of-level merge
+    uint64_t    currentLevelTotalBoards; // total boards in current level's input file(s); set by GPU feeder before reading starts
 
     // Merge-writer threads: one per NVMe drive, stable thdIdx maps to buffer/dir
     uint8_t numMergeWriters;

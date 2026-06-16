@@ -4,6 +4,19 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.1.8] - 2026-06-16
+
+### Added
+- **Solve-phase progress in status table** — The current-level row in the status
+  history table now shows `[solve XX.X%]` during GPU solving instead of the
+  generic `[running]` tag.  The GPU feeder pre-scans the input BLF file(s) via
+  `BLFTrailer(r)->recordCount` (trailer-only seek, cheap even on NAS) before
+  reading starts and stores the total in `currentLevelTotalBoards`.
+  `StatsListener` divides `boardsReadFromStore` by this total for the percentage.
+  The merge phase already showed `[merge XX.X%]`; both percentages now work.
+
+---
+
 ## [0.1.7] - 2026-06-16
 
 ### Fixed
