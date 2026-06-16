@@ -4,6 +4,28 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.1.7] - 2026-06-16
+
+### Fixed
+- **Column overflow in main log** — Board counts at level 16+ reach 11–12 digits,
+  overflowing the previous `%10llu`/`%8llu`/`%7.2f` format specs in
+  `PrintLevelStatsHeader` and `LogLevelSummary`.  All board-count columns widened
+  to `%14llu`, GB columns to `%9.2f`, and timing columns to `%10.3f`/`%12llu`.
+  Header and separator strings updated to match.
+
+- **Column overflow in status table** — Same problem in `StatsListener.cpp`;
+  format specs widened to `%13llu`/`%12llu`/`%9.2f`.  Header and separator
+  strings updated to match.
+
+### Added
+- **Current-level row in status table** — The history section in
+  `BuildStatusResponse` previously showed only completed levels.  It now appends a
+  live in-progress row for the level currently running, with a phase tag in the
+  `ns/brd` column: `[solving]`, `[flushing]`, `[merge XX.X%]`, or `[done]`.
+  History loop starts from `resumeLevel` so no blank rows appear on resume.
+
+---
+
 ## [0.1.6] - 2026-06-16
 
 ### Fixed

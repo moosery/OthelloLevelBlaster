@@ -122,12 +122,14 @@ static void WaitForPoolIdle(ThreadPool* pPool)
 static void PrintLevelStatsHeader()
 {
     LoggerLog(
-        "\n  Lv    BoardsIn   NewBoards      Pass   GpuDups   MrgDups  UniqueOut"
-        "    Ends  MaxMv   Fls    SlvGB    MrgGB   SlvTm(s)   MrgTm(s)   TotTm(s)"
-        "      SlvNs/b       MrgNs/b       TotNs/b  DateTime\n"
-        "  --  ----------  ----------  --------  --------  --------  ---------"
-        "  ------  -----  ----  -------  -------  ---------  ---------  ---------"
-        "  ------------  ------------  ------------  -------------------\n"
+        "\n  Lv        BoardsIn       NewBoards         Pass         GpuDups"
+        "         MrgDups       UniqueOut      Ends  MaxMv    Fls      SlvGB"
+        "      MrgGB    SlvTm(s)    MrgTm(s)    TotTm(s)       SlvNs/b"
+        "       MrgNs/b       TotNs/b  DateTime\n"
+        "  --  --------------  --------------  ----------  --------------"
+        "  --------------  --------------  --------  -----  -----  ---------"
+        "  ---------  ----------  ----------  ----------  ------------"
+        "  ------------  ------------  -------------------\n"
     );
 }
 
@@ -149,8 +151,8 @@ static void LogLevelSummary(int level, PSolveContext pCtx)
     double   mrgGB     = ls->mergeBytes / (1024.0 * 1024.0 * 1024.0);
 
     LoggerLog(
-        "  %2d  %10llu  %10llu  %8llu  %8llu  %8llu  %9llu"
-        "  %6llu  %5u  %4llu  %7.2f  %7.2f  %9.3f  %9.3f  %9.3f"
+        "  %2d  %14llu  %14llu  %10llu  %14llu  %14llu  %14llu"
+        "  %8llu  %5u  %5llu  %9.2f  %9.2f  %10.3f  %10.3f  %10.3f"
         "  %12llu  %12llu  %12llu  %s\n",
         level,
         (unsigned long long)(ls->boardsReadFromStore + ls->passBoards),

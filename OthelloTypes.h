@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.1.6"
+#define VERSION           "0.1.7"
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)

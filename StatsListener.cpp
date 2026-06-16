@@ -119,32 +119,57 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                       freeBytes.QuadPart / (1024.0 * 1024.0 * 1024.0 * 1024.0));
     }
 
-    // --- Completed level history (compact table) ---
-    if (curLevel > 0)
+    // --- Level history table (completed levels + current in-progress row) ---
+    n += snprintf(buf + n, bufSize - n, "\n");
+    n += snprintf(buf + n, bufSize - n,
+                  "Lvl       BoardsIn      Generated       GpuDups       MrgDups        Written      SlvGB  Duration    ns/brd\n");
+    n += snprintf(buf + n, bufSize - n,
+                  "---  -------------  -------------  ------------  ------------  -------------  ---------  --------  --------\n");
+    for (int lvl = pSt->resumeLevel; lvl < curLevel; lvl++)
     {
-        n += snprintf(buf + n, bufSize - n, "\n");
+        const LevelStats* ls = &pSt->levelStats[lvl];
+        FormatDuration(ls->totalNanos, dur, sizeof(dur));
+        uint64_t ns = (ls->boardsReadFromStore > 0)
+                      ? (uint64_t)(ls->totalNanos / (int64_t)ls->boardsReadFromStore) : 0;
         n += snprintf(buf + n, bufSize - n,
-                      "Lvl  BoardsIn      Generated    GpuDups    MrgDups    Written       SlvGB    Duration   ns/brd\n");
+                      "%3d  %13llu  %13llu  %12llu  %12llu  %13llu  %9.2f  %8s  %8llu\n",
+                      lvl,
+                      (unsigned long long)ls->boardsReadFromStore,
+                      (unsigned long long)ls->boardsGenerated,
+                      (unsigned long long)ls->gpuDupsRemoved,
+                      (unsigned long long)ls->mrgDupsRemoved,
+                      (unsigned long long)ls->boardsWrittenToDisk,
+                      ls->mwBytes / (1024.0 * 1024.0 * 1024.0),
+                      dur,
+                      (unsigned long long)ns);
+    }
+    // Current level row with live partial data and phase tag
+    {
+        char curDur[16];
+        FormatDuration(elapsedNanos, curDur, sizeof(curDur));
+        char phaseStr[20] = "[running]";
+        if (curDone)
+            snprintf(phaseStr, sizeof(phaseStr), "[done]");
+        else if (pSt->currentPhase
+                 && strcmp(pSt->currentPhase, "Merging to store") == 0
+                 && pSt->mergeTotalInputBytes > 0)
+            snprintf(phaseStr, sizeof(phaseStr), "[merge%5.1f%%]",
+                     100.0 * (double)pSt->mergeProgressBytes
+                           / (double)pSt->mergeTotalInputBytes);
+        else if (pSt->currentPhase
+                 && strcmp(pSt->currentPhase, "Flushing buffers") == 0)
+            snprintf(phaseStr, sizeof(phaseStr), "[flushing]");
         n += snprintf(buf + n, bufSize - n,
-                      "---  ------------  -----------  ---------  ---------  ------------  -------  ---------  ------\n");
-        for (int lvl = 0; lvl < curLevel; lvl++)
-        {
-            const LevelStats* ls = &pSt->levelStats[lvl];
-            FormatDuration(ls->totalNanos, dur, sizeof(dur));
-            uint64_t ns = (ls->boardsReadFromStore > 0)
-                          ? (uint64_t)(ls->totalNanos / (int64_t)ls->boardsReadFromStore) : 0;
-            n += snprintf(buf + n, bufSize - n,
-                          "%3d  %12llu  %11llu  %9llu  %9llu  %12llu  %7.2f  %9s  %6llu\n",
-                          lvl,
-                          (unsigned long long)ls->boardsReadFromStore,
-                          (unsigned long long)ls->boardsGenerated,
-                          (unsigned long long)ls->gpuDupsRemoved,
-                          (unsigned long long)ls->mrgDupsRemoved,
-                          (unsigned long long)ls->boardsWrittenToDisk,
-                          ls->mwBytes / (1024.0 * 1024.0 * 1024.0),
-                          dur,
-                          (unsigned long long)ns);
-        }
+                      "%3d  %13llu  %13llu  %12llu  %12llu  %13llu  %9.2f  %8s  %s\n",
+                      curLevel,
+                      (unsigned long long)cur->boardsReadFromStore,
+                      (unsigned long long)cur->boardsGenerated,
+                      (unsigned long long)cur->gpuDupsRemoved,
+                      (unsigned long long)cur->mrgDupsRemoved,
+                      (unsigned long long)cur->boardsWrittenToDisk,
+                      cur->mwBytes / (1024.0 * 1024.0 * 1024.0),
+                      curDur,
+                      phaseStr);
     }
 
     n += snprintf(buf + n, bufSize - n, "END\n");
