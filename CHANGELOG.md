@@ -4,6 +4,18 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.1.5] - 2026-06-16
+
+### Fixed
+- **Resume skips incomplete level files** — `ScanForResumeLevel` previously used
+  `GetFileAttributesA` (existence-only check), so a level file truncated by a
+  mid-write crash would be treated as complete.  It now opens each candidate with
+  `BLFOpen`, which validates the `BLF_MAGIC` trailer.  If the magic is absent the
+  file is deleted and that level becomes the resume point, so the solver re-runs
+  it cleanly rather than feeding corrupt data to the GPU feeder.
+
+---
+
 ## [0.1.4] - 2026-06-16
 
 ### Fixed

@@ -1,4 +1,5 @@
 #include "InitSolver.h"
+#include "BlasterFile.h"
 #include "OthelloBasics.h"
 #include "Utility.h"
 #include <windows.h>
@@ -195,8 +196,19 @@ static int ScanForResumeLevel(POthelloLevelBlasterState pState)
         char path[MAX_FULL_PATH_NAME];
         snprintf(path, sizeof(path), "%s\\Level_%04d_file_0000.bin",
                  pState->storeDirectory, level);
+
         if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
+            return level;  // file absent — resume from here
+
+        BLFReader* r = BLFOpen(path);
+        if (!r)
+        {
+            // File exists but trailer magic is missing — interrupted write; delete and retry level
+            LoggerLog("ScanForResumeLevel: incomplete level %d file, deleting '%s'\n", level, path);
+            DeleteFileA(path);
             return level;
+        }
+        BLFClose(&r);
     }
     return MAX_LEVELS;
 }
