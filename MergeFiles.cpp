@@ -49,7 +49,7 @@ struct InMemHeadGreater
 // ============================================================================
 
 static int EnumerateWriterFiles(const char* dir, char** outPaths, int maxPaths,
-                                 uint64_t* pTotalBytes)
+                                 uint64_t* pTotalBytes, uint64_t* outSizes = nullptr)
 {
     char pattern[MAX_FULL_PATH_NAME];
     snprintf(pattern, sizeof(pattern), "%s\\*.bin", dir);
@@ -73,6 +73,7 @@ static int EnumerateWriterFiles(const char* dir, char** outPaths, int maxPaths,
         sz.LowPart  = fd.nFileSizeLow;
         sz.HighPart = (DWORD)fd.nFileSizeHigh;
         *pTotalBytes += sz.QuadPart;
+        if (outSizes) outSizes[count] = sz.QuadPart;
         count++;
     } while (FindNextFileA(h, &fd));
     FindClose(h);
@@ -275,21 +276,24 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
 
 void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
 {
-    POthelloLevelBlasterState pSt    = pCtx->pState;
-    const char*               mwDir  = pSt->mwDirectory[mwIdx];
-    int                       level  = (int)pSt->playLevel;
+    POthelloLevelBlasterState pSt   = pCtx->pState;
+    const char*               mwDir = pSt->mwDirectory[mwIdx];
+    int                       level = (int)pSt->playLevel;
 
     const int kMaxInputFiles = MAX_MERGE_FANIN * MAX_MERGE_FANIN;
-    char**    inputPaths     = (char**)MemMalloc("mergeInputPaths",
-                                                  (size_t)kMaxInputFiles * sizeof(char*));
-    if (!inputPaths)
-        Fatal(FATAL_ALLOCATION_FAILED, "DoIntermediateMerge: cannot allocate path array");
+    char**    inputPaths = (char**)MemMalloc("mergeInputPaths",
+                                              (size_t)kMaxInputFiles * sizeof(char*));
+    uint64_t* fileSizes  = (uint64_t*)MemMalloc("mergeFileSizes",
+                                                  (size_t)kMaxInputFiles * sizeof(uint64_t));
+    if (!inputPaths || !fileSizes)
+        Fatal(FATAL_ALLOCATION_FAILED, "DoIntermediateMerge: cannot allocate arrays");
 
     uint64_t totalInputBytes = 0;
-    int numFiles = EnumerateWriterFiles(mwDir, inputPaths, kMaxInputFiles, &totalInputBytes);
-
+    int numFiles = EnumerateWriterFiles(mwDir, inputPaths, kMaxInputFiles,
+                                        &totalInputBytes, fileSizes);
     if (numFiles == 0)
     {
+        MemFree(fileSizes);
         MemFree(inputPaths);
         return;
     }
@@ -298,34 +302,61 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
               mwIdx, mwDir[0], numFiles,
               (double)totalInputBytes / (1024.0 * 1024.0 * 1024.0));
 
-    const char* destDir = SelectMergeDestination(pSt, totalInputBytes);
-    if (!destDir)
-        Fatal(FATAL_DRIVE_SPACE,
-              "IntermediateMerge: no merge drive has %.2f GB free (mw[%d] %c:)",
-              (double)totalInputBytes / (1024.0 * 1024.0 * 1024.0), mwIdx, mwDir[0]);
-
-    int mergeDirIdx = 0;
-    for (int i = 0; i < pSt->numMergeDirs; i++)
-        if (pSt->mergeDirectory[i][0] == destDir[0]) { mergeDirIdx = i; break; }
-
-    char outPath[MAX_FULL_PATH_NAME];
-    snprintf(outPath, sizeof(outPath), "%s\\imerge_L%03d_%04d.bin",
-             destDir, level, pSt->mergeFileCount[mergeDirIdx]++);
-
-    int      tempCount    = 0;
-    uint64_t uniqueBoards = CascadingMerge(inputPaths, numFiles,
-                                            destDir, outPath, &tempCount, level, nullptr);
-
-    for (int i = 0; i < numFiles; i++)
+    // Split into batches of MAX_MERGE_FANIN. Each batch is a single-pass KWayMergeFiles
+    // (no cascade temp files), so worst-case space = batch input bytes only.
+    // Route each batch to the first medium dir with enough free space; fall back to the
+    // store merge dir when no medium drive can fit it. Two MW threads may call this
+    // simultaneously and both pick the same dir — use InterlockedExchangeAdd so they
+    // get distinct file indices without a mutex.
+    int batchStart = 0;
+    while (batchStart < numFiles)
     {
-        DeleteFileA(inputPaths[i]);
-        MemFree(inputPaths[i]);
+        int      batchCount = (std::min)(MAX_MERGE_FANIN, numFiles - batchStart);
+        uint64_t batchBytes = 0;
+        for (int i = batchStart; i < batchStart + batchCount; i++)
+            batchBytes += fileSizes[i];
+
+        const char* destDir     = SelectMergeDestination(pSt, batchBytes);
+        bool        useStoreMrg = (destDir == nullptr);
+        if (useStoreMrg)
+            destDir = pSt->storeMergeDirectory;
+
+        int fileIdx;
+        if (useStoreMrg)
+        {
+            fileIdx = (int)InterlockedExchangeAdd(
+                          (volatile LONG*)&pSt->storeMergeFileCount, 1);
+        }
+        else
+        {
+            int di = 0;
+            for (int i = 0; i < pSt->numMergeDirs; i++)
+                if (pSt->mergeDirectory[i][0] == destDir[0]) { di = i; break; }
+            fileIdx = (int)InterlockedExchangeAdd(
+                          (volatile LONG*)&pSt->mergeFileCount[di], 1);
+        }
+
+        char outPath[MAX_FULL_PATH_NAME];
+        snprintf(outPath, sizeof(outPath), "%s\\imerge_L%03d_%04d.bin",
+                 destDir, level, fileIdx);
+
+        uint64_t unique = KWayMergeFiles(inputPaths + batchStart, batchCount, outPath, nullptr);
+
+        LoggerLog("IntermediateMerge: [%d..%d] → '%s'  (%llu unique boards)\n",
+                  batchStart, batchStart + batchCount - 1, outPath, unique);
+
+        for (int i = batchStart; i < batchStart + batchCount; i++)
+        {
+            DeleteFileA(inputPaths[i]);
+            MemFree(inputPaths[i]);
+        }
+
+        batchStart += batchCount;
     }
+
+    MemFree(fileSizes);
     MemFree(inputPaths);
-
     pSt->mwFileCount[mwIdx] = 0;
-
-    LoggerLog("IntermediateMerge: → '%s' (%llu unique boards)\n", outPath, uniqueBoards);
 }
 
 // ============================================================================
@@ -358,6 +389,16 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
     {
         uint64_t dirBytes = 0;
         numFiles += EnumerateWriterFiles(pSt->mergeDirectory[i],
+                                          inputPaths + numFiles,
+                                          kMaxInputFiles - numFiles, &dirBytes);
+        totalInputBytes += dirBytes;
+    }
+
+    // Also collect any overflow intermediate files written to the store merge dir
+    if (numFiles < kMaxInputFiles)
+    {
+        uint64_t dirBytes = 0;
+        numFiles += EnumerateWriterFiles(pSt->storeMergeDirectory,
                                           inputPaths + numFiles,
                                           kMaxInputFiles - numFiles, &dirBytes);
         totalInputBytes += dirBytes;

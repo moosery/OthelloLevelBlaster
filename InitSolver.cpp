@@ -107,6 +107,9 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
 
     snprintf(pState->storeDirectory, MAX_FULL_PATH_NAME, "%c:%s\\storeDir",
              pConfig->storeDrive, pConfig->storeDirNameNoDrive);
+    snprintf(pState->storeMergeDirectory, MAX_FULL_PATH_NAME, "%c:%s\\storeMergeDir",
+             pConfig->storeDrive, pConfig->storeDirNameNoDrive);
+    pState->storeMergeFileCount = 0;
 
     // Build per-drive stats
     pState->numWriterDrives = 0;
@@ -185,6 +188,19 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     LoggerLog("Allocation complete.\n");
 }
 
+static int ScanForResumeLevel(POthelloLevelBlasterState pState)
+{
+    for (int level = 0; level < MAX_LEVELS; level++)
+    {
+        char path[MAX_FULL_PATH_NAME];
+        snprintf(path, sizeof(path), "%s\\Level_%04d_file_0000.bin",
+                 pState->storeDirectory, level);
+        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
+            return level;
+    }
+    return MAX_LEVELS;
+}
+
 static void cleanUpDrives(POthelloLevelBlasterState pState, PMachineInfo pMachineInfo)
 {
     LoggerLog("Purging previous run data...\n");
@@ -203,7 +219,17 @@ static void cleanUpDrives(POthelloLevelBlasterState pState, PMachineInfo pMachin
         DeleteDirRecursive(pState->mergeDirectory[i]);
     }
 
-    if (GetFileAttributesA(pState->storeDirectory) != INVALID_FILE_ATTRIBUTES)
+    if (GetFileAttributesA(pState->storeMergeDirectory) != INVALID_FILE_ATTRIBUTES)
+    {
+        LoggerLog("  Deleting store merge dir: %s\n", pState->storeMergeDirectory);
+        DeleteDirRecursive(pState->storeMergeDirectory);
+    }
+
+    if (pState->resumeLevel > 0)
+    {
+        LoggerLog("  Keeping store dir (resuming from level %d).\n", pState->resumeLevel);
+    }
+    else if (GetFileAttributesA(pState->storeDirectory) != INVALID_FILE_ATTRIBUTES)
     {
         LoggerLog("  Deleting store dir: %s\n", pState->storeDirectory);
         DeleteDirRecursive(pState->storeDirectory);
@@ -225,6 +251,10 @@ static void createDirectories(POthelloLevelBlasterState pState)
             Fatal(FATAL_CREATE_DIR_FAILED, "Cannot create merge directory '%s'",
                   pState->mergeDirectory[i]);
 
+    if (!CreateFullPath(pState->storeMergeDirectory))
+        Fatal(FATAL_CREATE_DIR_FAILED, "Cannot create store merge directory '%s'",
+              pState->storeMergeDirectory);
+
     if (!CreateFullPath(pState->storeDirectory))
         Fatal(FATAL_CREATE_DIR_FAILED, "Cannot create store directory '%s'",
               pState->storeDirectory);
@@ -245,6 +275,7 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
 
     GetMachineInfo(pConfig->cacheDirName, pConfig->useDrives, pMachineInfo);
     computeState(pConfig, pState, pMachineInfo);
+    pState->resumeLevel = ScanForResumeLevel(pState);
     cleanUpDrives(pState, pMachineInfo);
     createDirectories(pState);
 
@@ -295,7 +326,12 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
     LoggerLog("  Merge dirs:\n");
     for (int i = 0; i < pState->numMergeDirs; i++)
         LoggerLog("    [%d] %s\n", i, pState->mergeDirectory[i]);
-    LoggerLog("  Store dir          : %s\n\n", pState->storeDirectory);
+    LoggerLog("  Store merge dir    : %s\n", pState->storeMergeDirectory);
+    LoggerLog("  Store dir          : %s\n", pState->storeDirectory);
+    if (pState->resumeLevel > 0)
+        LoggerLog("  ** Resuming from level %d (levels 0..%d already stored)\n",
+                  pState->resumeLevel, pState->resumeLevel - 1);
+    LoggerLog("\n");
 }
 
 void CleanupSolver(POthelloLevelBlasterState pState)

@@ -4,6 +4,57 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.1.3] - 2026-06-16
+
+### Added
+- **Automatic resume** — On startup, `InitSolver` scans `storeDir` for
+  `Level_XXXX_file_0000.bin` files and sets `resumeLevel` to the first missing
+  level.  If `resumeLevel > 0`, the store directory is preserved (not purged)
+  and the level loop starts from `resumeLevel` instead of 0.  `CreateSeedFile`
+  already no-ops when `Level_0000_file_0000.bin` exists, so no seed-file change
+  is needed.  The completed-level history table at run end starts from
+  `resumeLevel` so zeroed skipped-level rows are not printed.
+- **`storeMergeFileCount` reset per level** — The atomic intermediate-merge
+  fallback counter on the store drive (added in 0.1.2) is now reset to 0 at the
+  start of each level, consistent with `mergeFileCount[]`.
+
+---
+
+## [0.1.2] - 2026-06-16
+
+### Fixed
+- **Intermediate merge space overflow** — `DoIntermediateMerge` previously called
+  `CascadingMerge` on all writer files at once.  For large levels (e.g. level 17:
+  361 files / 3.7 TB) this triggers a 2-level cascade that needs up to
+  `2 × inputBytes` of scratch space on the medium drive simultaneously (group temp
+  files + final output all coexist).  That can exceed the medium drive's capacity
+  and eventually cause a `Fatal(FATAL_DRIVE_SPACE, ...)`.
+
+  **Fix**: `DoIntermediateMerge` now splits files into batches of `MAX_MERGE_FANIN`
+  and calls `KWayMergeFiles` once per batch.  Each batch is a single-pass merge
+  with no cascade temp files, so worst-case space = batch input bytes (1×, not 2×).
+  Multiple batches are routed to whichever medium drive has room; if no medium drive
+  can fit a batch, that batch is written to a new **store merge directory** on the
+  store drive (Y:).
+
+- **Intermediate merge file-counter race** — Two MW threads (D: and E:) can call
+  `DoIntermediateMerge` simultaneously and both write to the same medium merge dir,
+  racing on `mergeFileCount[i]++`.  All counter increments now use
+  `InterlockedExchangeAdd` to guarantee unique filenames without a mutex.
+
+### Added
+- **Store merge directory** (`Y:\…\storeMergeDir`) — created and purged alongside
+  the existing directories.  Acts as last-resort intermediate merge destination
+  when no medium drive has sufficient free space for a batch.  `DoEndOfLevelMerge`
+  scans it automatically alongside the medium merge dirs.
+
+- **Per-file size tracking in `EnumerateWriterFiles`** — optional `outSizes` array
+  parameter (defaults to `nullptr`; existing callers unchanged) so
+  `DoIntermediateMerge` can compute accurate per-batch byte counts without
+  re-opening each file.
+
+---
+
 ## [0.1.1] - 2026-06-15
 
 ### Fixed

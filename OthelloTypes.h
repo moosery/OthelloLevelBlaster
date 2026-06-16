@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.1.1"
+#define VERSION           "0.1.3"
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
@@ -77,6 +77,7 @@ typedef struct __OthelloLevelBlasterConfig
 typedef struct __OthelloLevelBlasterState
 {
     uint8_t     playLevel;
+    int         resumeLevel;          // first level not found in storeDir at startup (0 = fresh run)
     bool        terminateThreads;
     bool        terminateStatsListener;
     const char* currentPhase;       // points to a string literal; set by main thread at each phase transition
@@ -97,12 +98,17 @@ typedef struct __OthelloLevelBlasterState
     int    mwSegSize[MAX_WRITERS][MAX_MW_SEGS];    // board count of each segment
     size_t mwBoardsUsed[MAX_WRITERS];              // total boards accumulated so far
 
-    // Intermediate merge destinations (medium drives: F:, Y:)
+    // Intermediate merge destinations (medium drives: F:, etc.)
     char    mergeDirectory[MAX_WRITER_DRIVES][MAX_FULL_PATH_NAME];
     uint8_t numMergeDirs;
-    int     mergeFileCount[MAX_WRITER_DRIVES];
+    int     mergeFileCount[MAX_WRITER_DRIVES];  // access via InterlockedExchangeAdd
 
-    // Store (slow/NAS drive: Z:)
+    // Fallback intermediate merge destination on the store drive (used when no
+    // medium drive has enough space for even one MAX_MERGE_FANIN batch).
+    char    storeMergeDirectory[MAX_FULL_PATH_NAME];
+    int     storeMergeFileCount;                // access via InterlockedExchangeAdd
+
+    // Store (slow/NAS drive: Y:)
     char    storeDirectory[MAX_FULL_PATH_NAME];
     char    logFileName[MAX_FULL_PATH_NAME];
 

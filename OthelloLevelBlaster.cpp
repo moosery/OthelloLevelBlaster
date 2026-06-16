@@ -198,11 +198,16 @@ int main(int argc, char* argv[])
 
     // 4 pieces are pre-placed at game start; each level adds one piece.
     // The last level (all squares filled) generates no children but counts terminal boards.
-    const int maxLevel = g_config.boardSize * g_config.boardSize - 3;
+    const int maxLevel   = g_config.boardSize * g_config.boardSize - 3;
+    const int startLevel = g_state.resumeLevel;
+
+    if (startLevel > 0)
+        LoggerLog("Resuming from level %d (levels 0..%d already complete).\n",
+                  startLevel, startLevel - 1);
 
     PrintLevelStatsHeader();
 
-    for (int level = 0; level < maxLevel && !g_state.terminateThreads; level++)
+    for (int level = startLevel; level < maxLevel && !g_state.terminateThreads; level++)
     {
         g_state.playLevel = (uint8_t)level;
 
@@ -211,6 +216,7 @@ int main(int argc, char* argv[])
             g_state.mwFileCount[i] = 0;
         for (int i = 0; i < g_state.numMergeDirs; i++)
             g_state.mergeFileCount[i] = 0;
+        g_state.storeMergeFileCount = 0;
         for (int i = 0; i < g_state.numWriterDrives; i++)
         {
             g_state.writerDriveStats[i].levelFilesWritten = 0;
@@ -277,7 +283,7 @@ int main(int argc, char* argv[])
     {
         LoggerLog("\n--- Completed level history ---\n");
         PrintLevelStatsHeader();
-        for (int lvl = 0; lvl <= (int)g_state.playLevel; lvl++)
+        for (int lvl = startLevel; lvl <= (int)g_state.playLevel; lvl++)
             LogLevelSummary(lvl, &ctx);
     }
 
