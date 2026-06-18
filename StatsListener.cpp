@@ -150,6 +150,25 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                       doneGB, totalGB, pct);
     }
 
+    // Cascade progress — shown when CascadingMerge is writing intermediate temp files.
+    // The merge progress counter freezes during these passes (output goes to temp files,
+    // not the final store file), so this gives visibility into what looks like a stalled merge.
+    for (int p = 0; p <= 1; p++)
+    {
+        if (pSt->cascadeActive[p])
+        {
+            const char* playerName = (p == 1) ? "black" : "white";
+            double gbWritten = (double)(int64_t)pSt->cascadeGroupProgressBytes[p]
+                               / (1024.0 * 1024.0 * 1024.0);
+            n += snprintf(buf + n, bufSize - n,
+                          "  Cascade %-5s         : group %d / %d  (%.2f GB to temp)\n",
+                          playerName,
+                          pSt->cascadeGroupsDone[p] + 1,
+                          pSt->cascadeNumGroups[p],
+                          gbWritten);
+        }
+    }
+
     // Store drive free space (queried live; not in writerDriveStats since it never gets writer dirs)
     {
         char storeRoot[4] = { pCfg->storeDrive, ':', '\\', '\0' };

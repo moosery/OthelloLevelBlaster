@@ -83,6 +83,14 @@ typedef struct __OthelloLevelBlasterState
     const char* currentPhase;       // points to a string literal; set by main thread at each phase transition
     volatile int64_t   mergeProgressBytes;   // bytes written to final merge output (two merge threads write; stats thread reads)
     uint64_t           mergeTotalInputBytes; // total input bytes for current end-of-level merge (set before threads start)
+
+    // Per-player cascade progress — populated when CascadingMerge triggers during DoEndOfLevelMerge.
+    // Indexed by BLF_PLAYER_WHITE(0) / BLF_PLAYER_BLACK(1).
+    // Written by the merge thread, read by the stats thread (no lock needed; display-only).
+    bool             cascadeActive[2];              // true while intermediate groups are running
+    int              cascadeNumGroups[2];            // total intermediate groups in this cascade
+    int              cascadeGroupsDone[2];           // groups fully written to temp so far
+    volatile int64_t cascadeGroupProgressBytes[2];  // bytes written to current group's temp file
     uint64_t    currentLevelTotalBoards; // total boards in current level's input file(s); set by GPU feeder before reading starts
 
     // Merge-writer threads: one per NVMe drive, stable thdIdx maps to buffer/dir

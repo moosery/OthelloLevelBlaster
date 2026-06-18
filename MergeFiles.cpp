@@ -176,18 +176,31 @@ static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* out
     return BLFWriterClose(pw);
 }
 
+// pCtx is non-null only on the outer call; nullptr is passed for the recursive final-pass
+// call so cascade tracking is not re-entered.
 static uint64_t CascadingMerge(char** inputPaths, int numInputs,
                                  const char* workDir, const char* finalOutPath,
                                  int* pTempCount, int level, int player,
-                                 volatile int64_t* pProgressBytes)
+                                 volatile int64_t* pProgressBytes,
+                                 PSolveContext pCtx)
 {
     if (numInputs <= MAX_MERGE_FANIN)
         return KWayMergeFiles(inputPaths, numInputs, finalOutPath, pProgressBytes);
+
+    POthelloLevelBlasterState pSt = pCtx ? pCtx->pState : nullptr;
 
     int    numGroups = (numInputs + MAX_MERGE_FANIN - 1) / MAX_MERGE_FANIN;
     char** tempPaths = (char**)MemMalloc("cascadeTempPaths", (size_t)numGroups * sizeof(char*));
     if (!tempPaths)
         Fatal(FATAL_ALLOCATION_FAILED, "CascadingMerge: cannot allocate temp path array");
+
+    if (pSt)
+    {
+        pSt->cascadeNumGroups[player]          = numGroups;
+        pSt->cascadeGroupsDone[player]         = 0;
+        pSt->cascadeGroupProgressBytes[player] = 0;
+        pSt->cascadeActive[player]             = true;
+    }
 
     int numTemps = 0;
     for (int g = 0; g < numGroups; g++)
@@ -195,20 +208,28 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
         int start     = g * MAX_MERGE_FANIN;
         int groupSize = (std::min)(MAX_MERGE_FANIN, numInputs - start);
 
+        if (pSt) pSt->cascadeGroupProgressBytes[player] = 0;
+
         char tempPath[MAX_FULL_PATH_NAME];
         BLFNameCascadeTemp(tempPath, sizeof(tempPath), workDir, level, player, (*pTempCount)++);
 
-        KWayMergeFiles(inputPaths + start, groupSize, tempPath, nullptr);
+        KWayMergeFiles(inputPaths + start, groupSize, tempPath,
+                       pSt ? &pSt->cascadeGroupProgressBytes[player] : nullptr);
 
         tempPaths[numTemps] = (char*)MemMalloc("cascadeTempPath", strlen(tempPath) + 1);
         if (!tempPaths[numTemps])
             Fatal(FATAL_ALLOCATION_FAILED, "CascadingMerge: cannot allocate temp path");
         strcpy(tempPaths[numTemps], tempPath);
         numTemps++;
+
+        if (pSt) pSt->cascadeGroupsDone[player]++;
     }
 
+    if (pSt) pSt->cascadeActive[player] = false;
+
     uint64_t unique = CascadingMerge(tempPaths, numTemps, workDir, finalOutPath,
-                                      pTempCount, level, player, pProgressBytes);
+                                      pTempCount, level, player, pProgressBytes,
+                                      nullptr);
 
     for (int i = 0; i < numTemps; i++)
     {
@@ -587,7 +608,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             }
             int tempCount = 0;
             pd.unique = CascadingMerge(pd.inputPaths, pd.numFiles, tempDir, outPath,
-                                        &tempCount, level, player, pProg);
+                                        &tempCount, level, player, pProg, pCtx);
             for (int i = 0; i < pd.numFiles; i++)
                 DeleteFileA(pd.inputPaths[i]);
         }
