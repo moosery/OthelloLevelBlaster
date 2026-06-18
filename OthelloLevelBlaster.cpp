@@ -25,6 +25,8 @@ static void PrintUsage(const char* prog)
     printf("  --store-dir PATH  Sub-path on store drive (no drive letter)  [default: \\OthelloLevelBlaster\\Store]\n");
     printf("  --cache-dir PATH  Full path for logs and drive-bench cache   [default: C:\\OthelloLevelBlaster\\Cache]\n");
     printf("  --port N          Stats listener TCP port                    [default: 17432]\n");
+    printf("  --compress        Write store files as .blfz (delta+varint, ~7x smaller)\n");
+    printf("  --no-compress     Write store files as .blf (default, uncompressed)\n");
     printf("  --help            Show this help\n\n");
     printf("Auto-resume: if storeDir already contains level files from a previous run,\n");
     printf("  the solver automatically resumes from the first missing level.\n");
@@ -52,7 +54,15 @@ static void ParseArgs(int argc, char* argv[])
 #define REQUIRE_NEXT(flag) \
         if (++i >= argc) { printf("ERROR: %s requires a value\n", flag); exit(1); }
 
-        if (strcmp(argv[i], "--board-size") == 0)
+        if (strcmp(argv[i], "--compress") == 0)
+        {
+            g_config.compressStoreFiles = true;
+        }
+        else if (strcmp(argv[i], "--no-compress") == 0)
+        {
+            g_config.compressStoreFiles = false;
+        }
+        else if (strcmp(argv[i], "--board-size") == 0)
         {
             REQUIRE_NEXT("--board-size")
             int n = atoi(argv[i]);

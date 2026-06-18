@@ -95,6 +95,33 @@ static inline void BLFPatternImergeFiles(char* out, size_t outSize,
              dir, level, BLFPlayerStr(player));
 }
 
+// ── Compressed store files (.blfz) ───────────────────────────────────────────
+// Same naming as store files but with .blfz extension.
+// Used when --compress is active; BLFOpen detects format from the magic value.
+
+static inline void BLFZNameStoreFile(char* out, size_t outSize,
+                                      const char* dir, int boardSize,
+                                      int level, int player, int fileIdx)
+{
+    snprintf(out, outSize, "%s\\Level_%04d_%dx%d_%s_%04d.blfz",
+             dir, level, boardSize, boardSize, BLFPlayerStr(player), fileIdx);
+}
+
+static inline void BLFZPatternStoreFiles(char* out, size_t outSize,
+                                          const char* dir, int boardSize,
+                                          int level, int player)
+{
+    snprintf(out, outSize, "%s\\Level_%04d_%dx%d_%s_*.blfz",
+             dir, level, boardSize, boardSize, BLFPlayerStr(player));
+}
+
+static inline void BLFZPatternAnyStoreFiles(char* out, size_t outSize,
+                                             const char* dir, int boardSize, int level)
+{
+    snprintf(out, outSize, "%s\\Level_%04d_%dx%d_*.blfz",
+             dir, level, boardSize, boardSize);
+}
+
 // ── Cascade temp files ───────────────────────────────────────────────────────
 
 static inline void BLFNameCascadeTemp(char* out, size_t outSize,

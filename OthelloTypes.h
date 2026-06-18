@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.2"
+#define VERSION           "0.2.3"
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
@@ -72,6 +72,7 @@ typedef struct __OthelloLevelBlasterConfig
     char     storeDirNameNoDrive[MAX_FULL_PATH_NAME];
     char     storeDrive;
     uint16_t statsPort;
+    bool     compressStoreFiles;   // write .blfz (delta+varint) instead of .blf
 } OthelloLevelBlasterConfig, *POthelloLevelBlasterConfig;
 
 typedef struct __OthelloLevelBlasterState

@@ -50,13 +50,22 @@ static_assert(sizeof(BlasterFileTrailer) == 64, "BlasterFileTrailer must be 64 b
 void BLFWrite(const char* path, const BOARD_KEY_DISK* pKeys, uint64_t count);
 
 // Streaming writer — records are fed one at a time (e.g. from a k-way merge).
-// The CRT write buffer is set to BLF_WRITE_BUFFER_SIZE bytes.
+// BLFWriterOpen  : plain 16-byte records, CRT write buffer = BLF_WRITE_BUFFER_SIZE.
+// BLFWriterOpenZ : delta+varint compressed output (.blfz), own I/O buffer.
+// BLFWriterRecord and BLFWriterClose work identically for both writers.
 // BLFWriterClose writes the trailer, closes the file, and returns the record count.
-#define BLF_WRITE_BUFFER_SIZE (512 * 1024)
+#define BLF_WRITE_BUFFER_SIZE      (512  * 1024)
+#define BLF_COMP_WRITE_BUFFER_SIZE (64   * 1024)
+#define BLF_COMP_READ_BUFFER_SIZE  (1024 * 1024)
+
+// Second magic value: delta+varint compressed store file.
+// _reserved[0..7] in the trailer stores the compressed byte count (uint64_t LE).
+#define BLFZ_MAGIC 0x5A46494C54534C42ULL   // "BLSTFILZ" in little-endian ASCII
 
 typedef struct __BLFWriter BLFWriter;
 
 BLFWriter* BLFWriterOpen(const char* path);
+BLFWriter* BLFWriterOpenZ(const char* path);   // compressed variant
 void       BLFWriterRecord(BLFWriter* pw, const BOARD_KEY_DISK* pKey);
 uint64_t   BLFWriterClose(BLFWriter* pw);
 

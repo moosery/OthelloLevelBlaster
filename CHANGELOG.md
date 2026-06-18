@@ -4,6 +4,40 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.3] - 2026-06-18
+
+### Compressed store files (`--compress`, `.blfz` format)
+
+Added optional delta+zigzag+varint compression for store files, reducing on-disk
+size by ~3.5x (varint alone) compared to uncompressed `.blf`.
+
+**New flag**: `--compress` writes store files as `.blfz`; `--no-compress` keeps
+the default uncompressed `.blf`.  The format is chosen once at startup and applies
+to all end-of-level output files.  Intermediate/temp files (writer, imerge, cascade)
+always stay `.blf`.
+
+- **`BlasterFile.h`** — `BLFZ_MAGIC`, `BLF_COMP_WRITE_BUFFER_SIZE`,
+  `BLF_COMP_READ_BUFFER_SIZE`, `BLFWriterOpenZ` declaration.
+- **`BlasterFile.cpp`** — streaming delta+zigzag+varint writer
+  (`BLFWriterOpenZ`, 64 KB write buffer, `FlushVarBuf`); streaming reader
+  (`BLFZReadByte`, `BLFZReadVarInt`, 1 MB read buffer); `BLFOpen` dispatches
+  on magic value so callers need no format knowledge; `BLFClose` frees the
+  read buffer; compressed byte count stored in `_reserved[0..7]` of the trailer.
+- **`BlasterFileName.h`** — `BLFZNameStoreFile`, `BLFZPatternStoreFiles`,
+  `BLFZPatternAnyStoreFiles` for `.blfz` naming.
+- **`OthelloTypes.h`** — `compressStoreFiles` field in config.
+- **`OthelloLevelBlaster.cpp`** — `--compress` / `--no-compress` flags;
+  startup log line showing selected format.
+- **`MergeFiles.cpp`** — `KWayMergeFiles` and `CascadingMerge` accept a
+  `compressed` flag; `DoEndOfLevelMerge` chooses `.blfz` filename and
+  `BLFWriterOpenZ` when flag is set; Y: drive reclaim uses actual file size
+  (via `GetFileAttributesExA`) for compressed output to correctly account for
+  the compression savings.
+- **`InitSolver.cpp`** — `ScanForResumeLevel` probes `.blfz` pattern when no
+  `.blf` is found; `BLFOpen` handles magic detection transparently.
+
+---
+
 ## [0.2.2] - 2026-06-18
 
 ### Drive space ledger (`DriveLedger.h`, `MergeFiles.cpp`, `LevelSolverThread.cpp`, `StatsListener.cpp`)

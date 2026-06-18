@@ -95,7 +95,7 @@ static int EnumerateByPattern(const char* fullPattern, char** outPaths, int maxP
 // File-based k-way merge of player-homogeneous files (all same player).
 // Reads/writes BOARD_KEY_DISK (16 bytes).  Deduplicates on (cellsInUse, cellColors).
 static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* outputPath,
-                                volatile int64_t* pProgressBytes)
+                                volatile int64_t* pProgressBytes, bool compressed = false)
 {
     std::priority_queue<MergeHead, std::vector<MergeHead>, MergeHeadGreater> heap;
 
@@ -114,7 +114,7 @@ static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* out
             BLFClose(&r);
     }
 
-    BLFWriter*     pw      = BLFWriterOpen(outputPath);
+    BLFWriter*     pw      = compressed ? BLFWriterOpenZ(outputPath) : BLFWriterOpen(outputPath);
     BOARD_KEY_DISK lastKey = {};
     bool           hasLast = false;
 
@@ -157,10 +157,10 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
                                  const char* workDir, const char* finalOutPath,
                                  int* pTempCount, int level, int player,
                                  volatile int64_t* pProgressBytes,
-                                 PSolveContext pCtx)
+                                 PSolveContext pCtx, bool compressFinal = false)
 {
     if (numInputs <= MAX_MERGE_FANIN)
-        return KWayMergeFiles(inputPaths, numInputs, finalOutPath, pProgressBytes);
+        return KWayMergeFiles(inputPaths, numInputs, finalOutPath, pProgressBytes, compressFinal);
 
     POthelloLevelBlasterState pSt = pCtx ? pCtx->pState : nullptr;
 
@@ -231,7 +231,7 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
 
     uint64_t unique = CascadingMerge(tempPaths, numTemps, workDir, finalOutPath,
                                       pTempCount, level, player, pProgressBytes,
-                                      nullptr);
+                                      nullptr, compressFinal);
 
     for (int i = 0; i < numTemps; i++)
     {
@@ -663,35 +663,64 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         }
 
         char outPath[MAX_FULL_PATH_NAME];
-        BLFNameStoreFile(outPath, sizeof(outPath), pSt->storeDirectory,
-                         boardSize, level + 1, player, 0);
+        if (pCfg->compressStoreFiles)
+            BLFZNameStoreFile(outPath, sizeof(outPath), pSt->storeDirectory,
+                              boardSize, level + 1, player, 0);
+        else
+            BLFNameStoreFile(outPath, sizeof(outPath), pSt->storeDirectory,
+                             boardSize, level + 1, player, 0);
 
         if (pd.numFiles == 1)
         {
-            BLFReader* r = BLFOpen(pd.inputPaths[0]);
-            if (r) { pd.unique = BLFTrailer(r)->recordCount; BLFClose(&r); }
-            if (!MoveFileExA(pd.inputPaths[0], outPath, MOVEFILE_COPY_ALLOWED))
-                Fatal(FATAL_FILE_OPEN,
-                      "EndOfLevelMerge: cannot move '%s' -> '%s' (err %lu)",
-                      pd.inputPaths[0], outPath, GetLastError());
-            // MoveFileExA deleted the source; reclaim its drive space.
-            DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
-            // Return any Y: overestimate (exact size was reserved, so this is usually 0).
-            int64_t actual = (int64_t)(pd.unique * sizeof(BOARD_KEY_DISK)
-                             + sizeof(BlasterFileTrailer));
-            DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
-            InterlockedAdd64((volatile LONG64*)pProg, (LONG64)(pd.unique * sizeof(BOARD_KEY_DISK)));
+            if (!pCfg->compressStoreFiles)
+            {
+                BLFReader* r = BLFOpen(pd.inputPaths[0]);
+                if (r) { pd.unique = BLFTrailer(r)->recordCount; BLFClose(&r); }
+                if (!MoveFileExA(pd.inputPaths[0], outPath, MOVEFILE_COPY_ALLOWED))
+                    Fatal(FATAL_FILE_OPEN,
+                          "EndOfLevelMerge: cannot move '%s' -> '%s' (err %lu)",
+                          pd.inputPaths[0], outPath, GetLastError());
+                DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
+                int64_t actual = (int64_t)(pd.unique * sizeof(BOARD_KEY_DISK)
+                                 + sizeof(BlasterFileTrailer));
+                DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
+                InterlockedAdd64((volatile LONG64*)pProg, (LONG64)(pd.unique * sizeof(BOARD_KEY_DISK)));
+            }
+            else
+            {
+                // Compress single input through streaming writer; KWayMergeFiles updates pProg.
+                pd.unique = KWayMergeFiles(pd.inputPaths, 1, outPath, pProg, true);
+                DeleteFileA(pd.inputPaths[0]);
+                DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                int64_t actual = 0;
+                if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
+                    actual = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
+                DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
+            }
         }
         else
         {
             // tempDir was chosen and reserved in Phase 1b.
             int tempCount = 0;
             pd.unique = CascadingMerge(pd.inputPaths, pd.numFiles, pd.tempDir, outPath,
-                                        &tempCount, level, player, pProg, pCtx);
+                                        &tempCount, level, player, pProg, pCtx,
+                                        pCfg->compressStoreFiles);
 
-            // Return Y: overestimate (dedup reduces actual output vs. worst-case reservation).
-            int64_t actual = (int64_t)(pd.unique * sizeof(BOARD_KEY_DISK)
-                             + (pd.unique > 0 ? sizeof(BlasterFileTrailer) : 0));
+            // Return Y: overestimate; use actual file size for compressed output.
+            int64_t actual;
+            if (pCfg->compressStoreFiles)
+            {
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                actual = 0;
+                if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
+                    actual = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
+            }
+            else
+            {
+                actual = (int64_t)(pd.unique * sizeof(BOARD_KEY_DISK)
+                         + (pd.unique > 0 ? sizeof(BlasterFileTrailer) : 0));
+            }
             DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
 
             // Reclaim source-file drive space as each input is deleted.

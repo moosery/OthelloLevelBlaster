@@ -205,7 +205,14 @@ static int ScanForResumeLevel(POthelloLevelBlasterState pState)
         WIN32_FIND_DATAA fd;
         HANDLE h = FindFirstFileA(pattern, &fd);
         if (h == INVALID_HANDLE_VALUE)
-            return level;  // no black file for this level — resume from here
+        {
+            // Also probe for compressed store files.
+            snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_black_0000.blfz",
+                     pState->storeDirectory, level);
+            h = FindFirstFileA(pattern, &fd);
+            if (h == INVALID_HANDLE_VALUE)
+                return level;  // no black file for this level — resume from here
+        }
         FindClose(h);
 
         // File exists: validate its trailer
@@ -348,6 +355,7 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
     LoggerLog("  Store threads      : %d\n", numStoreThreads);
     LoggerLog("  GPU threads        : %d\n", numGPUFeederThreads);
     LoggerLog("  Stats port         : %d\n", (int)pConfig->statsPort);
+    LoggerLog("  Store format       : %s\n", pConfig->compressStoreFiles ? ".blfz (delta+varint compressed)" : ".blf (uncompressed)");
     LoggerLog("  Ping-pong buf      : %.1f MB\n",
               pState->pingPongBufferSize / (1024.0 * 1024.0));
     LoggerLog("  MW buf             : %.1f GB x %d threads\n",
