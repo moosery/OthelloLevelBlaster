@@ -2,39 +2,63 @@
 
 GPU-accelerated BFS enumeration of unique Othello (Reversi) board states by level.
 
-Each *level* corresponds to one piece placed on the board (starting at 4 pre-placed pieces).
+Each *level* corresponds to one piece placed on the board (starting from 4 pre-placed pieces).
 The solver expands all legal moves from every unique board at level N, canonicalizes each
 result under the 16-element D4 × color-swap symmetry group, and deduplicates to produce
-the set of unique boards at level N+1.  The output for each level is a single sorted binary
-file stored on the designated store drive.
+the set of unique boards at level N+1.  The output for each level is a pair of sorted binary
+files on the store drive — one for black-to-move boards and one for white-to-move boards.
 
 ## Architecture
 
 ```
-Store drive (Y:)                   NVMe drives (D:, E:)           GPU
-  Level_N.bin ──ping-pong──► GPU feeder ──expand──► GPU accumulator
-                                                          │
-                                              CUB DeviceRadixSort (sm_89)
-                                                          │
-                                        merge-writer threads (one per NVMe dir)
-                                           in-memory k-way merge + dedup
-                                                          │
-                                              writer files on D:/E:
-                                                          │
-                                           DoEndOfLevelMerge (k-way)
-                                                          │
-                                          Level_(N+1).bin on store drive
+Store drive (Y:)
+  Level_N_black.blf ──┐
+  Level_N_white.blf ──┘
+         │
+    GPU feeder (ping-pong buffer, one batch at a time)
+         │
+    ExpandKernel → two-stack GPU accumulator (black ↑ from 0, white ↓ from cap)
+         │
+    GpuFlushPrepare: CUB DeviceRadixSort + dedup (two independent passes)
+         │
+    D2H to merge-writer thread (one per NVMe directory)
+         │
+    In-memory k-way merge + dedup per player → writer_black_NNNN.blf / writer_white_NNNN.blf
+         │                                      (on D:, E:, ...)
+         │  [if NVMe low: DoIntermediateMerge → imerge files on F:]
+         │
+    DoEndOfLevelMerge (parallel: black thread + white thread)
+      ├─ black: CascadingMerge(all black writer + imerge files) → Level_(N+1)_black_0000.blf
+      └─ white: CascadingMerge(all white writer + imerge files) → Level_(N+1)_white_0000.blf
+                                                                    (both on Y:)
 ```
 
-- **GPU feeder** — reads boards from the store drive in batches (ping-pong buffer) and
-  feeds the GPU accumulator.
-- **GPU accumulator** — performs move expansion and CUB DeviceRadixSort-based dedup
-  within each accumulation window.  Flushed to merge-writer threads when VRAM is ~80% full.
+### Key components
+
+- **GPU feeder** — reads boards from the store drive in batches via a ping-pong buffer and
+  feeds the GPU accumulator.  Two sub-passes per level: black-to-move files first, then
+  white-to-move files.
+- **GPU accumulator (two-stack)** — a single `BOARD_KEY_DISK*` array holds both players:
+  black grows from index 0 upward, white grows from `capacity-1` downward.  `ExpandKernel`
+  scatters children directly to the accumulator (no intermediate buffer).  Flushed to
+  merge-writer threads when VRAM is ~80% full.
 - **Merge-writer threads** — one per fast NVMe directory.  Accumulate GPU flush segments
-  in a large RAM buffer, k-way merge + dedup on flush, write a sorted binary BLF file.
-  Trigger intermediate merge to the HDD intermediate drive (F:) when NVMe free space is low.
-- **End-of-level merge** — k-way merge of all writer files and intermediate merge files
-  into a single sorted, deduped output file on the store drive.
+  in a large RAM buffer (two-stack layout mirroring the GPU), k-way merge + dedup per
+  player on flush, write separate `_black_` and `_white_` BLF files.  Trigger
+  `DoIntermediateMerge` to the HDD intermediate drive (F:) when NVMe space drops below
+  threshold.
+- **Intermediate merge** — batches of up to `MAX_MERGE_FANIN=256` writer files are k-way
+  merged to a medium drive (F:).  Falls back to the store merge directory on Y: if F:
+  has no room.
+- **End-of-level merge** — two threads run concurrently (one per player), each performing
+  a `CascadingMerge` over all remaining writer files and intermediate files.  If per-player
+  file count exceeds 256, a two-phase cascade is used: intermediate temps on F: (or Y:
+  fallback), then a final k-way pass to the store file on Y:.
+- **Drive space ledger** — all space decisions (intermediate merge destination, cascade temp
+  drive, final output) use an atomic per-drive ledger (`driveLedger[26]` in
+  `OthelloLevelBlasterState`) rather than live OS queries.  The ledger is seeded from the
+  OS after startup cleanup and re-seeded at each level start, with a 20 GB safety buffer
+  subtracted so reservations never reach the last bytes on any drive.
 
 ## Requirements
 
@@ -76,50 +100,75 @@ While the solver runs, query live status from another terminal:
 OthelloLevelBlasterStatus.exe
 ```
 
-The status client shows current level progress, per-drive throughput, merge progress
-percentage, and a completed-level history table.
+The status client shows current level progress, per-drive free space (from the ledger),
+merge progress percentage, cascade progress, and a completed-level history table.
+
+Auto-resume: if the store directory already contains level files from a previous run,
+the solver automatically resumes from the first missing level.
 
 ### Drive layout convention
 
 | Drive | Role | Notes |
 |-------|------|-------|
-| D:, E: | Fast (NVMe) | Merge-writer working space — needs ~2× level solve GB free |
-| F: | Intermediate (HDD) | Overflow merge destination when NVMe fills |
-| Y: | Store (NAS) | Accumulates one sorted file per level; needs total of all level files |
+| D:, E: | Fast (NVMe) | Merge-writer working space; needs room for one full level's writer output |
+| F: | Intermediate (HDD/SATA) | Overflow intermediate merge + cascade temp files |
+| Y: | Store (NAS/large HDD) | Accumulates two sorted BLF files per level (black + white); needs total of all level output |
 
 Drives are auto-detected and categorized by benchmark speed.  The cache file
 `C:\OthelloLevelBlaster\Cache\driveinfo.json` stores benchmark results across runs.
 
-## Performance (6×6, RTX 4080 SUPER)
+## File format
+
+Board states are stored in **BLF** (Blaster Level File) format:
+
+- A sorted array of `BOARD_KEY_DISK` records, **16 bytes each**:
+  `uint64_t ullCellsInUse` + `uint64_t ullCellColors`.
+- A 64-byte `BlasterFileTrailer` at the end: magic number, record count, min key, max key.
+
+Files are sorted in ascending numeric order matching CUB DeviceRadixSort output.
+Player turn (black-to-move / white-to-move) is encoded in the filename, not the record.
+
+### Filename conventions
+
+| Pattern | Description |
+|---------|-------------|
+| `Level_NNNN_SxS_black_0000.blf` | Level N black-to-move store file on Y: |
+| `Level_NNNN_SxS_white_0000.blf` | Level N white-to-move store file on Y: |
+| `writer_black_NNNN.blf` | In-progress flush output from a merge-writer thread |
+| `writer_white_NNNN.blf` | In-progress flush output from a merge-writer thread |
+| `Level_NNNN_imerge_black_NNNN.blf` | Intermediate merge output on F: |
+| `Level_NNNN_cascade_NNNN.blf` | Cascade temp file on F: (deleted after use) |
+
+## Performance (6×6, RTX 4080 SUPER, v0.2.x)
+
+*Early levels only; solve time grows roughly ×4–5 per level.*
 
 | Level | Unique boards | Solve time | Merge time | Total |
 |-------|--------------|------------|------------|-------|
-| 12    | 251 M        | 16.7 s     | 63.6 s     | 80.3 s |
-| 13    | 1.21 B       | 68.5 s     | 308 s      | 377 s  |
-| 14    | 5.01 B       | 233 s      | 1323 s     | 1556 s |
+| 12    | ~251 M       | ~17 s      | ~64 s      | ~80 s  |
+| 13    | ~1.2 B       | ~70 s      | ~310 s     | ~380 s |
+| 14    | ~5.0 B       | ~235 s     | ~1330 s    | ~1565 s |
+| 16    | ~56 B        | ~44 min    | ~60 min    | ~104 min |
 
-Store drive Y: (59 MB/s write, PCIe 1).  Merge speed scales with store drive bandwidth.
-
-## File format
-
-Board states are stored in **BLF** (Blaster Level File) format: a sorted array of
-`BOARD_KEY` records (24 bytes each) followed by a fixed-size trailer with record count
-and checksum.  Files are always sorted in ascending numeric order matching the GPU's
-CUB DeviceRadixSort output (uint64 numeric order on each 8-byte field, LSB-field first).
+Store drive Y: write speed (~59 MB/s, PCIe 1) dominates merge time.
+Cascade merge (F: HDD) adds significant time at levels where per-player file
+count exceeds `MAX_MERGE_FANIN=256`.
 
 ## Project layout
 
 ```
 OthelloLevelBlaster/
   OthelloLevelBlaster.cpp      Main loop, argument parsing, level driver
-  OthelloTypes.h               Shared structs: config, state, stats
-  InitSolver.cpp / .h          Resource allocation, drive setup, cleanup
-  GpuKernels.cu / .h           CUDA move expansion, canonical form, accumulator
+  OthelloTypes.h               Shared structs: config, state, stats, driveLedger
+  DriveLedger.h                Per-drive atomic space ledger (Reserve/Reclaim/Debit)
+  InitSolver.cpp / .h          Resource allocation, drive setup, cleanup, ledger init
+  GpuKernels.cu / .h           CUDA move expansion, canonical form, two-stack accumulator
   GpuInfo.cu / .h              GPU device query
-  LevelSolverThread.cpp / .h   GPU feeder thread (ping-pong reader → GPU)
-  MergeFiles.cpp / .h          Flush, intermediate merge, end-of-level merge
-  BlasterFile.cpp / .h         BLF reader/writer
-  SortAndDedup.cpp / .h        In-memory sort+dedup helpers
+  LevelSolverThread.cpp / .h   Merge-writer job + GPU feeder thread (ping-pong reader → GPU)
+  MergeFiles.cpp / .h          FlushMergeWriterBuffer, DoIntermediateMerge,
+                                CascadingMerge, DoEndOfLevelMerge
+  BlasterFile.cpp / .h         BLF reader/writer (16-byte records + 64-byte trailer)
+  BlasterFileName.h            BLF filename construction and pattern helpers
   StatsListener.cpp / .h       TCP stats server (port 17432)
   CreateSeedFile.cpp / .h      Level-0 seed file generator
   GetMachineInfo.cpp / .h      Drive detection, GPU detection, benchmarking

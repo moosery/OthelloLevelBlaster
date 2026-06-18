@@ -4,6 +4,7 @@
 #pragma comment(lib, "ws2_32.lib")
 
 #include "StatsListener.h"
+#include "DriveLedger.h"
 #include "OthelloTypes.h"
 #include "Logger.h"
 #include <stdio.h>
@@ -105,20 +106,18 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                       d->driveLetter, d->numDirs,
                       (unsigned long long)d->levelFilesWritten,
                       d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
-                      d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0),
+                      DriveAvailable(pSt, d->driveLetter) / (1024.0 * 1024.0 * 1024.0),
                       liveBlack, liveWhite);
     }
 
-    // Merge dir free space (F:, etc.)
+    // Merge dir free space (F:, etc.) — read from ledger, no OS query
     for (int i = 0; i < pSt->numMergeDirs; i++)
     {
-        char root[4] = { pSt->mergeDirectory[i][0], ':', '\\', '\0' };
-        ULARGE_INTEGER freeBytes = {};
-        GetDiskFreeSpaceExA(root, &freeBytes, nullptr, nullptr);
         n += snprintf(buf + n, bufSize - n,
                       "  Merge drv  %c:  free = %.2f GB\n",
                       pSt->mergeDirectory[i][0],
-                      freeBytes.QuadPart / (1024.0 * 1024.0 * 1024.0));
+                      DriveAvailable(pSt, pSt->mergeDirectory[i][0])
+                          / (1024.0 * 1024.0 * 1024.0));
     }
 
     // Active intermediate merges (per writer thread)
@@ -169,16 +168,12 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
         }
     }
 
-    // Store drive free space (queried live; not in writerDriveStats since it never gets writer dirs)
-    {
-        char storeRoot[4] = { pCfg->storeDrive, ':', '\\', '\0' };
-        ULARGE_INTEGER freeBytes = {};
-        GetDiskFreeSpaceExA(storeRoot, &freeBytes, nullptr, nullptr);
-        n += snprintf(buf + n, bufSize - n,
-                      "  Store drv  %c:  free = %.2f TB\n",
-                      pCfg->storeDrive,
-                      freeBytes.QuadPart / (1024.0 * 1024.0 * 1024.0 * 1024.0));
-    }
+    // Store drive free space — read from ledger, no OS query
+    n += snprintf(buf + n, bufSize - n,
+                  "  Store drv  %c:  free = %.2f TB\n",
+                  pCfg->storeDrive,
+                  DriveAvailable(pSt, pCfg->storeDrive)
+                      / (1024.0 * 1024.0 * 1024.0 * 1024.0));
 
     // --- Level history table (completed levels + current in-progress row) ---
     n += snprintf(buf + n, bufSize - n, "\n");

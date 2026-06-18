@@ -4,6 +4,54 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.2] - 2026-06-18
+
+### Drive space ledger (`DriveLedger.h`, `MergeFiles.cpp`, `LevelSolverThread.cpp`, `StatsListener.cpp`)
+
+Previously, every space decision queried `GetDiskFreeSpaceExA` at the moment of
+use.  This had three failure modes: (1) the parallel black/white end-of-level
+merge threads could both see "F: has room" when only one fit; (2) the cascade
+space check underestimated peak usage because input files and temp files coexist
+on F: simultaneously; (3) the stats display triggered OS calls on every poll.
+
+**The fix** replaces all ad-hoc OS queries with a single per-drive `volatile
+int64_t driveLedger[26]` atomic counter in `OthelloLevelBlasterState`.
+
+- **`DriveLedger.h`** (new) — four operations: `DriveInitLedger` (query OS
+  once, subtract 20 GB safety buffer, store as baseline), `DriveReserve`
+  (CAS-loop subtract; returns false if insufficient — no side-effect on failure),
+  `DriveReclaim` (add back on file deletion or overestimate correction),
+  `DriveDebit` (unconditional subtract for single-writer NVMe paths).
+- **20 GB safety buffer**: every `DriveInitLedger` call subtracts
+  `DRIVE_SPACE_LOW_BYTES` (20 GB) from the OS-reported free bytes so that no
+  reservation can ever consume the last 20 GB — providing headroom for filesystem
+  metadata, MFT growth, and other OS overhead.
+- **`SelectMergeDestination` removed**: the old function used a parallel
+  `mergeDirReservedBytes[]` array for F: reservation but ignored D:, E:, and Y:.
+  All decisions now go through `DriveReserve` / `DriveReclaim`.
+- **`FlushMergeWriterBuffer`**: `DriveDebit(NVMe, fileBytes)` after writing;
+  threshold check reads `DriveAvailable` instead of a live OS query.
+- **`DoIntermediateMerge`**: `DriveReserve(F_or_Y, batchBytes)` before each
+  batch (try all merge dirs in order, fall back to Y:, Fatal if none fit);
+  `DriveReclaim(dest, batchBytes - actual)` for dedup savings; `DriveReclaim`
+  per deleted source file.
+- **`CascadingMerge`**: per-group input bytes summed via `GetFileAttributesExA`;
+  `DriveReclaim(tempDrive, groupBytes - tempActual)` after each group; per-temp
+  `DriveReclaim` when temps are deleted.
+- **`DoEndOfLevelMerge` Phase 1b** (new, runs before threads start): atomically
+  reserves cascade temp space on F: for **both** players before either thread
+  starts — eliminating the race where both threads each saw "F: has room" but
+  combined they overflowed it.  Falls back to Y: per player if F: is full.
+  Also pre-reserves Y: worst-case output space for each player; `DriveReclaim`
+  corrects the overestimate after each merge completes.
+- **`StatsListener`**: drive free-space display for D:/E:, F:, and Y: now reads
+  from the ledger — no OS calls on the stats poll path.
+- Ledgers are initialised after startup cleanup and **re-initialised at the
+  start of every level** so any accumulated drift is corrected with a single
+  fresh OS query per drive per level.
+
+---
+
 ## [0.2.0] - 2026-06-17
 
 This release is a complete architectural overhaul of the on-disk format, GPU

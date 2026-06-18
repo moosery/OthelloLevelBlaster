@@ -1,6 +1,7 @@
 #include "InitSolver.h"
 #include "BlasterFile.h"
 #include "BlasterFileName.h"
+#include "DriveLedger.h"
 #include "OthelloBasics.h"
 #include "Utility.h"
 #include <windows.h>
@@ -134,10 +135,6 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     {
         pState->writerDriveStats[i].threshold =
             DRIVE_SPACE_LOW_BYTES * (uint64_t)pState->writerDriveStats[i].numDirs;
-        char root[4] = { pState->writerDriveStats[i].driveLetter, ':', '\\', '\0' };
-        ULARGE_INTEGER freeAvail = {};
-        GetDiskFreeSpaceExA(root, &freeAvail, nullptr, nullptr);
-        pState->writerDriveStats[i].lastFreeBytes = freeAvail.QuadPart;
     }
 
     // GPU accumulator worst-case capacity (boards) — used by merge-writer HasRoom check.
@@ -308,6 +305,14 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
     pState->resumeLevel  = (firstMissingFile > 0) ? firstMissingFile - 1 : 0;
     cleanUpDrives(pState, pMachineInfo);
     createDirectories(pState);
+
+    // Initialize drive space ledgers after cleanup so we start from clean free space.
+    // Each ledger is seeded with (OS free bytes - 20 GB safety buffer).
+    for (int i = 0; i < pState->numMergeWriters; i++)
+        DriveInitLedger(pState, pState->mwDirectory[i][0]);
+    for (int i = 0; i < pState->numMergeDirs; i++)
+        DriveInitLedger(pState, pState->mergeDirectory[i][0]);
+    DriveInitLedger(pState, pConfig->storeDrive);
 
     int numMWThreads        = pState->numMergeWriters;
     int numStoreThreads     = 1;

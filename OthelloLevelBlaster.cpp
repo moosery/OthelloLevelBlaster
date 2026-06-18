@@ -1,6 +1,7 @@
 #include "InitLogger.h"
 #include "InitSolver.h"
 #include "CreateSeedFile.h"
+#include "DriveLedger.h"
 #include "LevelSolverThread.h"
 #include "MergeFiles.h"
 #include "StatsListener.h"
@@ -238,6 +239,16 @@ int main(int argc, char* argv[])
         g_state.levelStats[level] = {};
         ClockStart(&g_state.levelStats[level].startTick);
 
+        // Re-initialize ledgers from the OS at each level start.
+        // NVMe and merge drives should be empty (prior level cleaned up);
+        // Y: reflects permanent store accumulation.  The 20 GB safety buffer
+        // is re-applied so space decisions never consume the last bytes.
+        for (int i = 0; i < g_state.numMergeWriters; i++)
+            DriveInitLedger(&g_state, g_state.mwDirectory[i][0]);
+        for (int i = 0; i < g_state.numMergeDirs; i++)
+            DriveInitLedger(&g_state, g_state.mergeDirectory[i][0]);
+        DriveInitLedger(&g_state, g_config.storeDrive);
+
         g_state.currentPhase = "GPU solving";
         SubmitGpuFeederJob(&ctx, (uint8_t)level);
         WaitForPoolIdle(g_state.pGPUFeederThreadPool);
@@ -260,12 +271,13 @@ int main(int argc, char* argv[])
             g_state.levelStats[level].totalNanos =
                 ClockNanosSinceStart(&g_state.levelStats[level].startTick);
 
-            {
-                char storeRoot[4] = { g_config.storeDrive, ':', '\\', '\0' };
-                ULARGE_INTEGER freeAvail = {};
-                GetDiskFreeSpaceExA(storeRoot, &freeAvail, nullptr, nullptr);
-                g_state.levelStats[level].storeFreeBytes = freeAvail.QuadPart;
-            }
+            g_state.levelStats[level].storeFreeBytes =
+                (uint64_t)DriveAvailable(&g_state, g_config.storeDrive);
+
+            // Populate lastFreeBytes from ledger before snapshotting for the history table
+            for (int i = 0; i < g_state.numWriterDrives; i++)
+                g_state.writerDriveStats[i].lastFreeBytes =
+                    (uint64_t)DriveAvailable(&g_state, g_state.writerDriveStats[i].driveLetter);
 
             // Snapshot per-drive stats before they're reset at the next level's start
             g_state.levelStats[level].numDriveSnapshot = g_state.numWriterDrives;

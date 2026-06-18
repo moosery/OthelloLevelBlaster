@@ -1,6 +1,7 @@
 #include "MergeFiles.h"
 #include "BlasterFile.h"
 #include "BlasterFileName.h"
+#include "DriveLedger.h"
 #include "OthelloBasics.h"
 #include "Logger.h"
 #include "Mem.h"
@@ -91,33 +92,6 @@ static int EnumerateByPattern(const char* fullPattern, char** outPaths, int maxP
     return count;
 }
 
-// Returns the first merge directory that can fit neededBytes (worst-case output size),
-// accounting for space already committed by other in-flight intermediate merge batches.
-static const char* SelectMergeDestination(POthelloLevelBlasterState pSt,
-                                           uint64_t neededBytes, int* pDirIdx)
-{
-    *pDirIdx = -1;
-    for (int i = 0; i < pSt->numMergeDirs; i++)
-    {
-        char root[4] = { pSt->mergeDirectory[i][0], ':', '\\', '\0' };
-        ULARGE_INTEGER freeAvail = {};
-        GetDiskFreeSpaceExA(root, &freeAvail, nullptr, nullptr);
-
-        volatile LONG64* pRes = (volatile LONG64*)&pSt->mergeDirReservedBytes[i];
-        LONG64 oldRes = InterlockedCompareExchange64(pRes, 0, 0);
-        for (;;)
-        {
-            int64_t effective = (int64_t)freeAvail.QuadPart - oldRes;
-            if (effective < (int64_t)neededBytes) break;
-            LONG64 newRes = oldRes + (LONG64)neededBytes;
-            LONG64 got    = InterlockedCompareExchange64(pRes, newRes, oldRes);
-            if (got == oldRes) { *pDirIdx = i; return pSt->mergeDirectory[i]; }
-            oldRes = got;
-        }
-    }
-    return nullptr;
-}
-
 // File-based k-way merge of player-homogeneous files (all same player).
 // Reads/writes BOARD_KEY_DISK (16 bytes).  Deduplicates on (cellsInUse, cellColors).
 static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* outputPath,
@@ -190,10 +164,14 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
 
     POthelloLevelBlasterState pSt = pCtx ? pCtx->pState : nullptr;
 
-    int    numGroups = (numInputs + MAX_MERGE_FANIN - 1) / MAX_MERGE_FANIN;
-    char** tempPaths = (char**)MemMalloc("cascadeTempPaths", (size_t)numGroups * sizeof(char*));
-    if (!tempPaths)
-        Fatal(FATAL_ALLOCATION_FAILED, "CascadingMerge: cannot allocate temp path array");
+    int     numGroups       = (numInputs + MAX_MERGE_FANIN - 1) / MAX_MERGE_FANIN;
+    char**  tempPaths       = (char**)MemMalloc("cascadeTempPaths",
+                                                  (size_t)numGroups * sizeof(char*));
+    int64_t* tempActualSizes = pSt
+        ? (int64_t*)MemMalloc("cascadeTempSizes", (size_t)numGroups * sizeof(int64_t))
+        : nullptr;
+    if (!tempPaths || (pSt && !tempActualSizes))
+        Fatal(FATAL_ALLOCATION_FAILED, "CascadingMerge: cannot allocate temp arrays");
 
     if (pSt)
     {
@@ -209,13 +187,36 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
         int start     = g * MAX_MERGE_FANIN;
         int groupSize = (std::min)(MAX_MERGE_FANIN, numInputs - start);
 
+        // Sum input file sizes for this group so we can reclaim the overestimate.
+        int64_t groupBytes = 0;
+        if (pSt)
+        {
+            for (int k = start; k < start + groupSize; k++)
+            {
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                if (GetFileAttributesExA(inputPaths[k], GetFileExInfoStandard, &fad))
+                    groupBytes += ((int64_t)fad.nFileSizeHigh << 32)
+                                | (int64_t)fad.nFileSizeLow;
+            }
+        }
+
         if (pSt) pSt->cascadeGroupProgressBytes[player] = 0;
 
         char tempPath[MAX_FULL_PATH_NAME];
         BLFNameCascadeTemp(tempPath, sizeof(tempPath), workDir, level, player, (*pTempCount)++);
 
-        KWayMergeFiles(inputPaths + start, groupSize, tempPath,
-                       pSt ? &pSt->cascadeGroupProgressBytes[player] : nullptr);
+        uint64_t tempUnique = KWayMergeFiles(inputPaths + start, groupSize, tempPath,
+                                              pSt ? &pSt->cascadeGroupProgressBytes[player]
+                                                  : nullptr);
+
+        if (pSt)
+        {
+            int64_t tempActual = (int64_t)(tempUnique * sizeof(BOARD_KEY_DISK)
+                                 + sizeof(BlasterFileTrailer));
+            tempActualSizes[numTemps] = tempActual;
+            // Return the portion of the pre-reserved space that dedup saved.
+            DriveReclaim(pSt, workDir[0], groupBytes - tempActual);
+        }
 
         tempPaths[numTemps] = (char*)MemMalloc("cascadeTempPath", strlen(tempPath) + 1);
         if (!tempPaths[numTemps])
@@ -234,10 +235,13 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
 
     for (int i = 0; i < numTemps; i++)
     {
+        // Reclaim temp drive space as each temp file is deleted.
+        if (pSt) DriveReclaim(pSt, workDir[0], tempActualSizes[i]);
         DeleteFileA(tempPaths[i]);
         MemFree(tempPaths[i]);
     }
     MemFree(tempPaths);
+    if (tempActualSizes) MemFree(tempActualSizes);
 
     return unique;
 }
@@ -342,19 +346,17 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     pSt->levelStats[level].mwFilesCreated      += filesCreated;
     pSt->levelStats[level].mwBytes             += fileBytes;
 
-    // Check drive space; trigger intermediate merge (NVMe -> HDD) if low
-    char driveRoot[4] = { pSt->mwDirectory[ti][0], ':', '\\', '\0' };
-    ULARGE_INTEGER freeAvail = {};
-    GetDiskFreeSpaceExA(driveRoot, &freeAvail, nullptr, nullptr);
+    // Debit the NVMe ledger for bytes just written, then check threshold.
+    char driveLetter = pSt->mwDirectory[ti][0];
+    DriveDebit(pSt, driveLetter, (int64_t)fileBytes);
 
     for (int i = 0; i < pSt->numWriterDrives; i++)
     {
-        if (pSt->writerDriveStats[i].driveLetter == pSt->mwDirectory[ti][0])
+        if (pSt->writerDriveStats[i].driveLetter == driveLetter)
         {
             pSt->writerDriveStats[i].levelFilesWritten += filesCreated;
             pSt->writerDriveStats[i].levelBytesWritten += fileBytes;
-            pSt->writerDriveStats[i].lastFreeBytes      = freeAvail.QuadPart;
-            if (freeAvail.QuadPart < pSt->writerDriveStats[i].threshold)
+            if (DriveAvailable(pSt, driveLetter) < (int64_t)pSt->writerDriveStats[i].threshold)
                 DoIntermediateMerge(ti, pCtx);
             break;
         }
@@ -425,15 +427,32 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
         while (batchStart < numFiles)
         {
             int      batchCount = (std::min)(MAX_MERGE_FANIN, numFiles - batchStart);
-            uint64_t batchBytes = 0;
+            int64_t  batchBytes = 0;
             for (int i = batchStart; i < batchStart + batchCount; i++)
-                batchBytes += fileSizes[i];
+                batchBytes += (int64_t)fileSizes[i];
 
+            // Reserve dest space: try each merge dir in order, fall back to Y:.
             int         dirIdx      = -1;
-            const char* destDir     = SelectMergeDestination(pSt, batchBytes, &dirIdx);
-            bool        useStoreMrg = (destDir == nullptr);
-            if (useStoreMrg)
-                destDir = pSt->storeMergeDirectory;
+            bool        useStoreMrg = true;
+            for (int d = 0; d < pSt->numMergeDirs; d++)
+            {
+                if (DriveReserve(pSt, pSt->mergeDirectory[d][0], batchBytes))
+                {
+                    dirIdx      = d;
+                    useStoreMrg = false;
+                    break;
+                }
+            }
+            if (useStoreMrg &&
+                !DriveReserve(pSt, pCtx->pConfig->storeDrive, batchBytes))
+                Fatal(FATAL_DRIVE_SPACE,
+                      "IntermediateMerge: no drive has %.2f GB for mw[%d] %s batch",
+                      batchBytes / (1024.0 * 1024.0 * 1024.0), mwIdx, playerStr);
+
+            const char* destDir    = useStoreMrg ? pSt->storeMergeDirectory
+                                                  : pSt->mergeDirectory[dirIdx];
+            char        destLetter = useStoreMrg ? pCtx->pConfig->storeDrive
+                                                 : pSt->mergeDirectory[dirIdx][0];
 
             int fileIdx;
             if (useStoreMrg)
@@ -455,21 +474,20 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
             BLFNameImergeFile(outPath, sizeof(outPath), destDir, level, player, fileIdx);
 
             uint64_t unique = KWayMergeFiles(inputPaths + batchStart, batchCount, outPath, nullptr);
-
-            if (!useStoreMrg && dirIdx >= 0)
-                InterlockedAdd64((volatile LONG64*)&pSt->mergeDirReservedBytes[dirIdx],
-                                 -(LONG64)batchBytes);
+            int64_t  actual = (int64_t)(unique * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer));
+            DriveReclaim(pSt, destLetter, batchBytes - actual);
 
             LoggerLog("IntermediateMerge: [%d..%d] %s -> '%s'  (%llu unique boards)\n",
                       batchStart, batchStart + batchCount - 1, playerStr, outPath, unique);
 
             for (int i = batchStart; i < batchStart + batchCount; i++)
             {
+                DriveReclaim(pSt, inputPaths[i][0], (int64_t)fileSizes[i]);
                 DeleteFileA(inputPaths[i]);
                 MemFree(inputPaths[i]);
             }
 
-            pSt->imergeDoneInputBytes[mwIdx] += batchBytes;
+            pSt->imergeDoneInputBytes[mwIdx] += (uint64_t)batchBytes;
             batchStart += batchCount;
         }
 
@@ -509,10 +527,14 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
     // giving the stats listener an accurate denominator from the beginning.
 
     struct PlayerData {
-        char**   inputPaths;
-        int      numFiles;
-        uint64_t inputBytes;
-        uint64_t unique;
+        char**      inputPaths;
+        uint64_t*   inputSizes;       // per-file sizes for ledger reclaim
+        int         numFiles;
+        uint64_t    inputBytes;
+        uint64_t    unique;
+        char        tempDrive;        // drive for cascade temps (0 = no cascade)
+        const char* tempDir;          // path for cascade temp directory
+        int64_t     storeReservation; // bytes pre-reserved on Y: for final output
     };
     PlayerData data[2] = {};  // indexed by BLF_PLAYER_WHITE(0) / BLF_PLAYER_BLACK(1)
 
@@ -520,11 +542,13 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
     {
         data[player].inputPaths = (char**)MemMalloc("eolInputPaths",
                                                      (size_t)kMaxInputFiles * sizeof(char*));
-        if (!data[player].inputPaths)
-            Fatal(FATAL_ALLOCATION_FAILED, "DoEndOfLevelMerge: cannot allocate path array");
+        data[player].inputSizes = (uint64_t*)MemMalloc("eolInputSizes",
+                                                         (size_t)kMaxInputFiles * sizeof(uint64_t));
+        if (!data[player].inputPaths || !data[player].inputSizes)
+            Fatal(FATAL_ALLOCATION_FAILED, "DoEndOfLevelMerge: cannot allocate path/size arrays");
 
-        int      numFiles       = 0;
-        uint64_t playerBytes    = 0;
+        int      numFiles    = 0;
+        uint64_t playerBytes = 0;
         char     pat[MAX_FULL_PATH_NAME];
 
         for (int i = 0; i < pSt->numMergeWriters && numFiles < kMaxInputFiles; i++)
@@ -532,7 +556,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             uint64_t d = 0;
             BLFPatternWriterFiles(pat, sizeof(pat), pSt->mwDirectory[i], player);
             numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
-                                           kMaxInputFiles - numFiles, &d);
+                                           kMaxInputFiles - numFiles, &d,
+                                           data[player].inputSizes + numFiles);
             playerBytes += d;
         }
         for (int i = 0; i < pSt->numMergeDirs && numFiles < kMaxInputFiles; i++)
@@ -540,7 +565,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             uint64_t d = 0;
             BLFPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[i], level, player);
             numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
-                                           kMaxInputFiles - numFiles, &d);
+                                           kMaxInputFiles - numFiles, &d,
+                                           data[player].inputSizes + numFiles);
             playerBytes += d;
         }
         if (numFiles < kMaxInputFiles)
@@ -548,13 +574,73 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             uint64_t d = 0;
             BLFPatternImergeFiles(pat, sizeof(pat), pSt->storeMergeDirectory, level, player);
             numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
-                                           kMaxInputFiles - numFiles, &d);
+                                           kMaxInputFiles - numFiles, &d,
+                                           data[player].inputSizes + numFiles);
             playerBytes += d;
         }
 
-        data[player].numFiles  = numFiles;
+        data[player].numFiles   = numFiles;
         data[player].inputBytes = playerBytes;
         pSt->mergeTotalInputBytes += playerBytes;
+    }
+
+    // ── Phase 1b: pre-reserve drive space for both players before any thread starts ──
+    // Temp space (cascade intermediates) is reserved on F: if it fits, else Y:.
+    // Final output space on Y: is reserved as worst-case (inputBytes) and corrected
+    // after each merge by reclaiming the dedup savings.
+    // All reservations are atomic so both threads can run safely in parallel.
+
+    for (int player = BLF_PLAYER_WHITE; player <= BLF_PLAYER_BLACK; player++)
+    {
+        PlayerData& pd     = data[player];
+        pd.tempDrive       = 0;
+        pd.tempDir         = nullptr;
+        pd.storeReservation = 0;
+
+        if (pd.numFiles == 0) continue;
+
+        int64_t inputBytes = (int64_t)pd.inputBytes;
+
+        if (pd.numFiles > 1)
+        {
+            // Try each merge dir (F:, etc.) for cascade temp space.
+            bool gotMerge = false;
+            for (int d = 0; d < pSt->numMergeDirs; d++)
+            {
+                if (DriveReserve(pSt, pSt->mergeDirectory[d][0], inputBytes))
+                {
+                    pd.tempDrive = pSt->mergeDirectory[d][0];
+                    pd.tempDir   = pSt->mergeDirectory[d];
+                    gotMerge     = true;
+                    break;
+                }
+            }
+            if (!gotMerge)
+            {
+                // Fall back to Y: for cascade temps.
+                if (!DriveReserve(pSt, pCfg->storeDrive, inputBytes))
+                    Fatal(FATAL_DRIVE_SPACE,
+                          "EndOfLevelMerge: %s cascade temps need %.2f GB — no drive has room",
+                          BLFPlayerStr(player),
+                          inputBytes / (1024.0 * 1024.0 * 1024.0));
+                pd.tempDrive = pCfg->storeDrive;
+                pd.tempDir   = pSt->storeMergeDirectory;
+                LoggerLog("EndOfLevelMerge: %s cascade temps on %c: (%.2f GB, merge drives full)\n",
+                          BLFPlayerStr(player), pCfg->storeDrive,
+                          inputBytes / (1024.0 * 1024.0 * 1024.0));
+            }
+        }
+
+        // Reserve Y: for the final store output (worst case = full input size).
+        int64_t storeNeeded = (pd.numFiles == 1) ? (int64_t)pd.inputSizes[0] : inputBytes;
+        if (!DriveReserve(pSt, pCfg->storeDrive, storeNeeded))
+            Fatal(FATAL_DRIVE_SPACE,
+                  "EndOfLevelMerge: %s store output needs %.2f GB on %c: (%.2f GB available)",
+                  BLFPlayerStr(player),
+                  storeNeeded / (1024.0 * 1024.0 * 1024.0),
+                  pCfg->storeDrive,
+                  DriveAvailable(pSt, pCfg->storeDrive) / (1024.0 * 1024.0 * 1024.0));
+        pd.storeReservation = storeNeeded;
     }
 
     // ── Phase 2: merge both players concurrently ─────────────────────────────
@@ -572,6 +658,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             LoggerLog("EndOfLevelMerge: level %d %s -- no files\n",
                       level, BLFPlayerStr(player));
             MemFree(pd.inputPaths);
+            MemFree(pd.inputSizes);
             return;
         }
 
@@ -587,31 +674,32 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                 Fatal(FATAL_FILE_OPEN,
                       "EndOfLevelMerge: cannot move '%s' -> '%s' (err %lu)",
                       pd.inputPaths[0], outPath, GetLastError());
+            // MoveFileExA deleted the source; reclaim its drive space.
+            DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
+            // Return any Y: overestimate (exact size was reserved, so this is usually 0).
+            int64_t actual = (int64_t)(pd.unique * sizeof(BOARD_KEY_DISK)
+                             + sizeof(BlasterFileTrailer));
+            DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
             InterlockedAdd64((volatile LONG64*)pProg, (LONG64)(pd.unique * sizeof(BOARD_KEY_DISK)));
         }
         else
         {
-            const char* tempDir = pSt->storeMergeDirectory;
-            if (pSt->numMergeDirs > 0)
-            {
-                char root[4] = { pSt->mergeDirectory[0][0], ':', '\\', '\0' };
-                ULARGE_INTEGER freeAvail = {};
-                GetDiskFreeSpaceExA(root, &freeAvail, nullptr, nullptr);
-                if (freeAvail.QuadPart >= pd.inputBytes)
-                    tempDir = pSt->mergeDirectory[0];
-                else
-                    LoggerLog("EndOfLevelMerge: %c: free %.2f GB < %.2f GB needed for %s cascade"
-                              " -- using store merge dir\n",
-                              pSt->mergeDirectory[0][0],
-                              freeAvail.QuadPart  / (1024.0 * 1024.0 * 1024.0),
-                              pd.inputBytes        / (1024.0 * 1024.0 * 1024.0),
-                              BLFPlayerStr(player));
-            }
+            // tempDir was chosen and reserved in Phase 1b.
             int tempCount = 0;
-            pd.unique = CascadingMerge(pd.inputPaths, pd.numFiles, tempDir, outPath,
+            pd.unique = CascadingMerge(pd.inputPaths, pd.numFiles, pd.tempDir, outPath,
                                         &tempCount, level, player, pProg, pCtx);
+
+            // Return Y: overestimate (dedup reduces actual output vs. worst-case reservation).
+            int64_t actual = (int64_t)(pd.unique * sizeof(BOARD_KEY_DISK)
+                             + (pd.unique > 0 ? sizeof(BlasterFileTrailer) : 0));
+            DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
+
+            // Reclaim source-file drive space as each input is deleted.
             for (int i = 0; i < pd.numFiles; i++)
+            {
+                DriveReclaim(pSt, pd.inputPaths[i][0], (int64_t)pd.inputSizes[i]);
                 DeleteFileA(pd.inputPaths[i]);
+            }
         }
 
         LoggerLog("EndOfLevelMerge: level %d %s -> '%s'  (%llu unique boards)\n",
@@ -620,6 +708,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         for (int i = 0; i < pd.numFiles; i++)
             MemFree(pd.inputPaths[i]);
         MemFree(pd.inputPaths);
+        MemFree(pd.inputSizes);
     };
 
     std::thread blackThread([&] { mergePlayer(BLF_PLAYER_BLACK); });

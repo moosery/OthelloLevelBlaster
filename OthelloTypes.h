@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.0"
+#define VERSION           "0.2.2"
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
@@ -119,10 +119,11 @@ typedef struct __OthelloLevelBlasterState
     int     mergeFileBlackCount[MAX_WRITER_DRIVES];  // access via InterlockedExchangeAdd
     int     mergeFileWhiteCount[MAX_WRITER_DRIVES];  // access via InterlockedExchangeAdd
 
-    // Bytes reserved but not yet written by in-flight intermediate merge batches.
-    // Updated atomically so concurrent MW threads see accurate effective free space.
-    // long long used (not LONG64) to avoid pulling <windows.h> into this header.
-    volatile long long mergeDirReservedBytes[MAX_WRITER_DRIVES];
+    // Per-drive space ledger (indexed by driveLetter - 'A').
+    // Initialized from the OS after cleanup; updated atomically on every write and delete.
+    // A 20 GB safety buffer is subtracted at init so reservations never reach the last
+    // bytes on a drive.  Replaces all ad-hoc GetDiskFreeSpaceExA calls at decision points.
+    volatile int64_t driveLedger[26];
 
     // Per-writer intermediate merge progress (written by MW threads, read by stats thread).
     // imergeActive[i] is set to 1 before the merge and 0 after; the other fields are
