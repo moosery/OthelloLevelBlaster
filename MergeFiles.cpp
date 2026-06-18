@@ -149,6 +149,9 @@ static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* out
         MergeHead top = heap.top();
         heap.pop();
 
+        if (pProgressBytes)
+            InterlockedAdd64((volatile LONG64*)pProgressBytes, (LONG64)sizeof(BOARD_KEY_DISK));
+
         bool isDup = hasLast
                      && top.key.ullCellsInUse == lastKey.ullCellsInUse
                      && top.key.ullCellColors == lastKey.ullCellColors;
@@ -157,8 +160,6 @@ static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* out
             BLFWriterRecord(pw, &top.key);
             lastKey = top.key;
             hasLast = true;
-            if (pProgressBytes)
-                InterlockedAdd64((volatile LONG64*)pProgressBytes, (LONG64)sizeof(BOARD_KEY_DISK));
         }
 
         BOARD_KEY_DISK next;
