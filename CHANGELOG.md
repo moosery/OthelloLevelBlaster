@@ -4,6 +4,15 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.4] - 2026-06-18
+
+### Default to compressed store files
+
+`compressStoreFiles` now defaults to `true`; use `--no-compress` to revert to
+uncompressed `.blf`.  Help text updated to reflect the new default.
+
+---
+
 ## [0.2.3] - 2026-06-18
 
 ### Compressed store files (`--compress`, `.blfz` format)
