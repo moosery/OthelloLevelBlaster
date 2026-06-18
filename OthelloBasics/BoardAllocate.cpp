@@ -35,7 +35,6 @@ static void BoardSetUpNewBoard(PBOARD pBoard)
     /*                  - Black upper right and lower left */
     /*                  - Black always goes first          */
     SetBoardSizeForRun(g_boardSize);
-    SETBOARDSIZE(pBoard, g_boardSize);
 
     SETOCCUPIED(pBoard, 3, 3);
     SETWHITE(pBoard, 3, 3);

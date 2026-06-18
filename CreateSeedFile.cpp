@@ -1,5 +1,6 @@
 #include "CreateSeedFile.h"
 #include "BlasterFile.h"
+#include "BlasterFileName.h"
 #include "OthelloBasics.h"
 #include "Logger.h"
 #include "Mem.h"
@@ -7,11 +8,10 @@
 
 void CreateSeedFile(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pState)
 {
-    (void)pConfig;
-
+    // Level 0 seed is always a single black-turn board
     char seedPath[MAX_FULL_PATH_NAME];
-    snprintf(seedPath, sizeof(seedPath), "%s\\Level_0000_file_0000.bin",
-             pState->storeDirectory);
+    BLFNameStoreFile(seedPath, sizeof(seedPath), pState->storeDirectory,
+                     (int)pConfig->boardSize, 0, BLF_PLAYER_BLACK, 0);
 
     // Already exists and is valid — restart scenario, nothing to do
     BLFReader* r = BLFOpen(seedPath);
@@ -28,13 +28,12 @@ void CreateSeedFile(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterStat
     if (!pRoot)
         Fatal(FATAL_ALLOCATION_FAILED, "CreateSeedFile: BoardAllocateFirstBoard failed");
 
-    BOARD_KEY key = {};
-    key.ullCellsInUse = pRoot->ullCellsInUse;
-    key.ullCellColors = pRoot->ullCellColors;
-    key.usBoardInfo   = pRoot->usBoardInfo;
+    BOARD_KEY_DISK dk;
+    dk.ullCellsInUse = pRoot->ullCellsInUse;
+    dk.ullCellColors = pRoot->ullCellColors;
     MemFree(pRoot);
 
-    BLFWrite(seedPath, &key, 1);
+    BLFWrite(seedPath, &dk, 1);
 
     LoggerLog("CreateSeedFile: wrote level-0 seed -> '%s' (1 board)\n", seedPath);
 }

@@ -17,8 +17,8 @@ static void printRowSeparator(FILE* fpOut, char startch, int startIdx, int endId
 static void movePrintBoardPart(FILE *fpOut, const char* pName, size_t ullCellsInUse, size_t ullCellColors, unsigned short usBoardInfo, unsigned short usRow, unsigned short usCol)
 {
     /* Print the board in visual form */
-    int startIdx = GETBOARDSTARTIDXSHORT(usBoardInfo);
-    int endIdx = GETBOARDENDIDXSHORT(usBoardInfo);
+    int startIdx = g_boardSi;
+    int endIdx = g_boardEi;
     char color;
     bool isParent = (strcmp(pName, "Parent") == 0);
 
@@ -69,7 +69,7 @@ static void movePrintBoardPart(FILE *fpOut, const char* pName, size_t ullCellsIn
     fprintf(stdout, " ullCellsInUse      : 0x%016llx\n", ullCellsInUse);
     fprintf(stdout, " ullCellColors      : 0x%016llx\n", ullCellColors);
     fprintf(stdout, " usBoardInfo        : 0x%02x\n", usBoardInfo);
-    fprintf(stdout, "   size             : %d\n", GETBOARDSIZESHORT(usBoardInfo));
+    fprintf(stdout, "   size             : %d\n", g_boardSize);
     fprintf(stdout, "   nextPlayer       : %c\n", GETBOARDNEXTPLAYERSHORT(usBoardInfo));
 
 
@@ -102,8 +102,8 @@ void MovePrint(FILE *fpOut, PMOVE pMove)
 
     /* Now dump the raw data */
     fprintf(fpOut, " usMoveIdx          : %d\n", pMove->usMoveIdx);
-    fprintf(fpOut, " move Row           : %d (%d)\n", GETROWFROMINDEX(pMove->usMoveIdx), (GETROWFROMINDEX(pMove->usMoveIdx) - (GETMOVEBOARDSTARTIDX(pMove)) + 1));
-    fprintf(fpOut, " move Col           : %d (%d)\n", GETCOLFROMINDEX(pMove->usMoveIdx), (GETCOLFROMINDEX(pMove->usMoveIdx) - (GETMOVEBOARDSTARTIDX(pMove)) + 1));
+    fprintf(fpOut, " move Row           : %d (%d)\n", GETROWFROMINDEX(pMove->usMoveIdx), (GETROWFROMINDEX(pMove->usMoveIdx) - (g_boardSi) + 1));
+    fprintf(fpOut, " move Col           : %d (%d)\n", GETCOLFROMINDEX(pMove->usMoveIdx), (GETCOLFROMINDEX(pMove->usMoveIdx) - (g_boardSi) + 1));
     fprintf(fpOut, " ullCellsInUseParent: 0x%016zX\n", pMove->ullCellsInUseParent);
     fprintf(fpOut, " ullCellColorsParent: 0x%016zX\n", pMove->ullCellColorsParent);
     fprintf(fpOut, " usBoardInfoParent  : 0x%02hX\n", pMove->usBoardInfoParent);

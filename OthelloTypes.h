@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.1.8"
+#define VERSION           "0.2.0"
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
@@ -81,8 +81,8 @@ typedef struct __OthelloLevelBlasterState
     bool        terminateThreads;
     bool        terminateStatsListener;
     const char* currentPhase;       // points to a string literal; set by main thread at each phase transition
-    uint64_t    mergeProgressBytes;      // bytes written to final merge output so far (main thread writes, stats thread reads)
-    uint64_t    mergeTotalInputBytes;    // total input bytes for the current end-of-level merge
+    volatile int64_t   mergeProgressBytes;   // bytes written to final merge output (two merge threads write; stats thread reads)
+    uint64_t           mergeTotalInputBytes; // total input bytes for current end-of-level merge (set before threads start)
     uint64_t    currentLevelTotalBoards; // total boards in current level's input file(s); set by GPU feeder before reading starts
 
     // Merge-writer threads: one per NVMe drive, stable thdIdx maps to buffer/dir
@@ -90,24 +90,44 @@ typedef struct __OthelloLevelBlasterState
     char    mwDirectory[MAX_WRITERS][MAX_FULL_PATH_NAME];
     size_t  mwBufferSize;                           // bytes per merge-writer buffer
     void*   pMWBuffer[MAX_WRITERS];                 // one large buffer per thread
-    int     mwFileCount[MAX_WRITERS];               // next output file number (reset each level)
+    int     mwBlackFileCount[MAX_WRITERS];           // next black-turn output file number (reset each level)
+    int     mwWhiteFileCount[MAX_WRITERS];           // next white-turn output file number (reset each level)
     size_t  gpuAccumCapacity;                       // GPU accumulator board capacity (for HasRoom check)
 
-    // Per-thread segment tracking (no sync needed — each thread owns its own slots)
-    int    mwSegCount[MAX_WRITERS];
-    size_t mwSegOffset[MAX_WRITERS][MAX_MW_SEGS];  // board offset of each segment in pMWBuffer
-    int    mwSegSize[MAX_WRITERS][MAX_MW_SEGS];    // board count of each segment
-    size_t mwBoardsUsed[MAX_WRITERS];              // total boards accumulated so far
+    // Per-thread two-stack segment tracking — black grows from top, white from bottom.
+    // No sync needed: each thread only touches its own slots.
+    int    mwBlackSegCount[MAX_WRITERS];
+    size_t mwBlackSegOffset[MAX_WRITERS][MAX_MW_SEGS];
+    int    mwBlackSegSize[MAX_WRITERS][MAX_MW_SEGS];
+    size_t mwBlackBoardsUsed[MAX_WRITERS];
+    int    mwWhiteSegCount[MAX_WRITERS];
+    size_t mwWhiteSegOffset[MAX_WRITERS][MAX_MW_SEGS];
+    int    mwWhiteSegSize[MAX_WRITERS][MAX_MW_SEGS];
+    size_t mwWhiteBoardsUsed[MAX_WRITERS];
 
     // Intermediate merge destinations (medium drives: F:, etc.)
     char    mergeDirectory[MAX_WRITER_DRIVES][MAX_FULL_PATH_NAME];
     uint8_t numMergeDirs;
-    int     mergeFileCount[MAX_WRITER_DRIVES];  // access via InterlockedExchangeAdd
+    int     mergeFileBlackCount[MAX_WRITER_DRIVES];  // access via InterlockedExchangeAdd
+    int     mergeFileWhiteCount[MAX_WRITER_DRIVES];  // access via InterlockedExchangeAdd
+
+    // Bytes reserved but not yet written by in-flight intermediate merge batches.
+    // Updated atomically so concurrent MW threads see accurate effective free space.
+    // long long used (not LONG64) to avoid pulling <windows.h> into this header.
+    volatile long long mergeDirReservedBytes[MAX_WRITER_DRIVES];
+
+    // Per-writer intermediate merge progress (written by MW threads, read by stats thread).
+    // imergeActive[i] is set to 1 before the merge and 0 after; the other fields are
+    // populated before imergeActive is set so the stats reader always sees consistent data.
+    int      imergeActive[MAX_WRITERS];
+    uint64_t imergeTotalInputBytes[MAX_WRITERS];
+    uint64_t imergeDoneInputBytes[MAX_WRITERS];
 
     // Fallback intermediate merge destination on the store drive (used when no
     // medium drive has enough space for even one MAX_MERGE_FANIN batch).
     char    storeMergeDirectory[MAX_FULL_PATH_NAME];
-    int     storeMergeFileCount;                // access via InterlockedExchangeAdd
+    int     storeMergeBlackFileCount;           // access via InterlockedExchangeAdd
+    int     storeMergeWhiteFileCount;           // access via InterlockedExchangeAdd
 
     // Store (slow/NAS drive: Y:)
     char    storeDirectory[MAX_FULL_PATH_NAME];

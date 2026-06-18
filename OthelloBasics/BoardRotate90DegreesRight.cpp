@@ -34,8 +34,8 @@ void BoardRotate90DegreesRight(PBOARD pBoard, PBOARD pResult)
 
 void BoardRotate90DegreesRight(PBOARD pBoard, PBOARD pResult)
 {
-    int startIdx = GETBOARDSTARTIDX(pBoard);
-    int endIdx = GETBOARDENDIDX(pBoard);
+    int startIdx = g_boardSi;
+    int endIdx = g_boardEi;
     int newRow;
     int newCol;
 

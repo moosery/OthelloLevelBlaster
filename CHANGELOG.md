@@ -4,6 +4,134 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.0] - 2026-06-17
+
+This release is a complete architectural overhaul of the on-disk format, GPU
+accumulator, and file pipeline.  **On-disk files from 0.1.x are incompatible
+with this version** (different record size and filename convention).
+
+### Why
+
+The 0.1.x pipeline stored 24-byte `BOARD_KEY` structs on disk even though 8 of
+those bytes — `usBoardInfo` (2 bytes) and `_pad[6]` — were derivable from the
+filename alone (board size is in the name; player turn is now the
+`_black_` / `_white_` filename segment).  Keeping them on disk wasted I/O,
+inflated BLF file sizes, and forced the GPU accumulator to carry a redundant
+intermediate `d_results` buffer (~456 MB on typical parameters) and a separate
+`ScatterKernel` pass.
+
+The fix is to make the record 16 bytes everywhere — GPU accumulator, MW buffer,
+merge heap, BLF files — and encode the only non-derivable context (player turn)
+in the filename.
+
+### Breaking changes
+
+- **On-disk record size**: `BOARD_KEY_DISK` is 16 bytes (`ullCellsInUse` +
+  `ullCellColors`).  The old 24-byte `BOARD_KEY` is no longer written to disk.
+- **Filename convention**: level files are now named
+  `Level_NNNN_SxS_black_NNNN.blf` / `Level_NNNN_SxS_white_NNNN.blf`;
+  intermediate files are `writer_black_NNNN.blf` / `writer_white_NNNN.blf`.
+  Old `Level_NNNN_file_NNNN.bin` naming is gone.
+
+### Changed — GPU accumulator (`GpuKernels.cu / .h`)
+
+- **Two-stack layout**: black boards grow from index 0 upward via
+  `atomicAdd(d_blackWritePos,1)`; white boards grow from `accumCapacity-1`
+  downward via `atomicAdd(d_whiteWritePos,1)`.  A single `BOARD_KEY_DISK*
+  d_accum` array holds both players simultaneously.
+- **`ExpandKernel` scatters directly to `d_accum`**: child boards are written
+  straight to the two-stack accumulator with no intermediate buffer.
+  `ScatterKernel` and the `d_results` array (~456 MB) are eliminated entirely.
+- **`GpuFlushPrepare` runs two independent sort+dedup passes** via
+  `SortAndDedupRegion`: one on the black region (`d_accum[0..B-1]`), one on
+  the white region (`d_accum[cap-W..cap-1]`).  Results are placed in `d_gather`
+  (black first, then white).
+- **`GpuFlushRead(pAccum, player, offset, pOut, maxCount)`**: reads from
+  `d_gather` with a per-player base offset; caller can D2H each player
+  independently.
+- **`GpuFlushBlackCount` / `GpuFlushWhiteCount`** — new accessors.
+- **Memory budget**: 57 bytes/slot (`16+16+8+8+4+4+1`) vs the old 73
+  bytes/slot — ~32% more accumulator capacity on the same GPU.
+
+### Changed — MW buffer and merge writer (`LevelSolverThread.cpp`, `OthelloTypes.h`)
+
+- **Two-stack MW buffer**: mirrors the GPU layout.  Black segments grow from
+  the start of the buffer; white segments grow inward from the end.  Eight
+  per-thread fields in `OthelloLevelBlasterState` replace the four old
+  single-stream fields: `mwBlackSegCount/Offset/Size/BoardsUsed[]`,
+  `mwWhiteSegCount/Offset/Size/BoardsUsed[]`.
+- **`FlushDescriptor`** carries `blackCount` + `whiteCount` (was a single
+  `uniqueCount`).
+
+### Changed — merge pipeline (`MergeFiles.cpp`)
+
+- **`FlushMergeWriterBuffer`** runs two independent k-way in-memory merges:
+  one over black segments, one over white, producing separate
+  `writer_black_NNNN.blf` / `writer_white_NNNN.blf` files.
+- **`InMemDiskHead` / `InMemDiskHeadGreater`** replace the old `InMemHead`
+  (which referenced 24-byte `BOARD_KEY`); comparator uses `ullCellsInUse`
+  then `ullCellColors` directly.
+- **`DoEndOfLevelMerge`** processes black and white streams independently,
+  producing two per-level store files.
+
+### Changed — GPU feeder (`LevelSolverThread.cpp`)
+
+- **Two sub-passes per level**: pass 1 reads all `_black_` store files with
+  `playerBit = BLF_PLAYER_BLACK`; pass 2 reads all `_white_` store files with
+  `BLF_PLAYER_WHITE`.  No mid-level accumulator flush between passes is
+  required because the MW buffer's two-stack layout can absorb both.
+
+### Changed — BLF layer (`BlasterFile.h / .cpp`)
+
+- All read/write APIs use `BOARD_KEY_DISK*` (16 bytes) exclusively.
+- `BlasterFileTrailer.minKey / maxKey` are 16-byte arrays.
+- `BLF_MAGIC`, `BLF_WRITE_BUFFER_SIZE`, and `BLF_PLAYER_BLACK/WHITE` constants.
+
+### Changed — seed file (`CreateSeedFile.cpp`)
+
+- Seed written as a 16-byte `BOARD_KEY_DISK` record with the standard starting
+  position; file named `Level_0000_SxS_black_0000.blf` (black plays first).
+
+### Changed — end-of-level merge parallelism (`MergeFiles.cpp`)
+
+- **Black and white merges now run concurrently** — `DoEndOfLevelMerge` was a
+  sequential loop over `{white, black}`.  It is now two-phase:
+  1. Sequential scan: enumerate input files for both players and set
+     `mergeTotalInputBytes` *before* any merge starts, so the stats display
+     has an accurate denominator from the first progress update.
+  2. Parallel merge: one `std::thread` per player.  Each thread opens at most
+     `MAX_MERGE_FANIN (256)` files simultaneously; peak simultaneous
+     file-descriptor use is therefore 514 — comfortably within the 2048
+     `_setmaxstdio` ceiling.
+- **`mergeProgressBytes` is now `volatile int64_t`** (was `uint64_t`),
+  incremented via `InterlockedAdd64` so both merge threads can update it
+  concurrently without tearing.  The stats listener reads it as a volatile
+  load (no lock needed — it's a best-effort UI percentage).
+- **`KWayMergeFiles` / `CascadingMerge`** now take `volatile int64_t*`
+  for the progress counter; the cast to `volatile LONG64*` is confined to
+  the two `InterlockedAdd64` call sites.
+
+### Changed — stats display (`StatsListener.cpp`)
+
+- Drive table now shows `BlkLive` and `WhtLive` columns — live count of
+  writer files on that drive for each player — so black/white write balance
+  is visible in real time.
+
+### Fixed
+
+- **Per-level reset used deleted field names**: `OthelloLevelBlaster.cpp` still
+  referenced `mwFileCount[]`, `mergeFileCount[]`, `storeMergeFileCount` which
+  were replaced by `mwBlackFileCount`/`mwWhiteFileCount` etc. in previous
+  sessions.  Corrected to the six new split field names.
+- **Stale `levelFileNamePattern` macro**: `LevelSolverThread.h` contained
+  `#define levelFileNamePattern "Level_%04d_file_%04d"` pointing to the old
+  `.bin` naming scheme.  Removed.
+- **Missing `#include "Error.h"` in `BlasterFile.cpp`**: `Fatal` and
+  `FATAL_FILE_OPEN` / `FATAL_ALLOCATION_FAILED` were not declared because the
+  Utility header was not pulled in.  Fixed.
+
+---
+
 ## [0.1.8] - 2026-06-16
 
 ### Added

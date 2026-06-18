@@ -37,8 +37,8 @@ void BoardMirrorVerticalAxis(PBOARD pBoard, PBOARD pResult)
 
 void BoardMirrorVerticalAxis(PBOARD pBoard, PBOARD pResult)
 {
-    int startIdx = GETBOARDSTARTIDX(pBoard);
-    int endIdx = GETBOARDENDIDX(pBoard);
+    int startIdx = g_boardSi;
+    int endIdx = g_boardEi;
 
     pResult->usBoardInfo = pBoard->usBoardInfo;
     pResult->_pad1[0] = pResult->_pad1[1] = pResult->_pad1[2] = 0;

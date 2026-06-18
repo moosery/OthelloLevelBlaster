@@ -218,11 +218,18 @@ int main(int argc, char* argv[])
 
         // Reset per-level per-thread state
         for (int i = 0; i < g_state.numMergeWriters; i++)
-            g_state.mwFileCount[i] = 0;
+        {
+            g_state.mwBlackFileCount[i] = 0;
+            g_state.mwWhiteFileCount[i] = 0;
+        }
         for (int i = 0; i < g_state.numMergeDirs; i++)
-            g_state.mergeFileCount[i] = 0;
-        g_state.storeMergeFileCount     = 0;
-        g_state.currentLevelTotalBoards = 0;
+        {
+            g_state.mergeFileBlackCount[i] = 0;
+            g_state.mergeFileWhiteCount[i] = 0;
+        }
+        g_state.storeMergeBlackFileCount = 0;
+        g_state.storeMergeWhiteFileCount = 0;
+        g_state.currentLevelTotalBoards  = 0;
         for (int i = 0; i < g_state.numWriterDrives; i++)
         {
             g_state.writerDriveStats[i].levelFilesWritten = 0;

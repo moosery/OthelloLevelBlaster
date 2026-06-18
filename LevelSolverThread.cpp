@@ -1,64 +1,75 @@
 #include "LevelSolverThread.h"
 #include "MergeFiles.h"
 #include "BlasterFile.h"
+#include "BlasterFileName.h"
 #include "OthelloBasics.h"
 #include "Logger.h"
 #include "Mem.h"
 #include <string.h>
 #include <algorithm>
+#include <windows.h>
 
 // ============================================================================
 // Merge-writer pool job
 //
-// thdIdx is stable per thread (0 = D:, 1 = E:, etc.) and used to select the
-// thread's private buffer, directory, and segment state.  No synchronisation
-// is needed because each thread only ever touches its own slots.
-//
-// Flow:
-//   1. D2H the sorted+deduped GPU flush into the next segment slot in the
-//      thread's buffer.
-//   2. Signal hDoneEvent so the GPU feeder can reset the accumulator and
-//      continue accumulating the next batch immediately.
-//   3. Check whether the buffer can fit another worst-case GPU flush.
-//      If not, do the in-memory k-way merge to disk and reset the buffer.
+// Receives a completed GPU flush (sorted+deduped black and white boards in
+// d_gather).  D2H copies each player region into the matching end of the
+// thread's two-stack MW buffer, signals the GPU feeder so it can reset the
+// accumulator, then checks whether the buffer needs to be flushed to disk.
 // ============================================================================
 
 static void RunMergeWriterJob(uint32_t thdIdx, PSolveContext pCtx, PFlushDescriptor pDesc)
 {
     POthelloLevelBlasterState pSt = pCtx->pState;
-    const int ti = (int)thdIdx;
+    const int   ti         = (int)thdIdx;
+    const int   blackCount = pDesc->blackCount;
+    const int   whiteCount = pDesc->whiteCount;
 
-    // Pointer to where the next segment starts in this thread's buffer
-    BOARD_KEY* pSegStart = (BOARD_KEY*)pSt->pMWBuffer[ti] + pSt->mwBoardsUsed[ti];
+    BOARD_KEY_DISK* mwBuf = (BOARD_KEY_DISK*)pSt->pMWBuffer[ti];
+    size_t          mwCap = pSt->mwBufferSize / sizeof(BOARD_KEY_DISK);
 
-    // D2H: read all unique boards from the GPU accumulator into the buffer
-    int remaining = pDesc->uniqueCount;
-    int written   = 0;
-    while (remaining > 0)
-    {
-        int got = GpuFlushRead(pDesc->pAccum, (size_t)written, pSegStart + written, remaining);
-        if (got == 0) break;
-        written   += got;
-        remaining -= got;
-    }
+    // Compute destinations before D2H
+    BOARD_KEY_DISK* blackDest = mwBuf + pSt->mwBlackBoardsUsed[ti];
 
-    // GPU feeder can reset the accumulator and start accumulating the next batch
+    // White boards grow inward from the end; compute where new run lands
+    size_t whiteStart = mwCap - pSt->mwWhiteBoardsUsed[ti] - (size_t)whiteCount;
+    BOARD_KEY_DISK* whiteDest = mwBuf + whiteStart;
+
+    // D2H both player regions
+    if (blackCount > 0)
+        GpuFlushRead(pDesc->pAccum, BLF_PLAYER_BLACK, 0, blackDest, blackCount);
+    if (whiteCount > 0)
+        GpuFlushRead(pDesc->pAccum, BLF_PLAYER_WHITE, 0, whiteDest, whiteCount);
+
+    // Signal feeder: D2H done, accumulator can be reset
     SetEvent(pDesc->hDoneEvent);
 
-    // Record this segment
-    const int si = pSt->mwSegCount[ti];
-    pSt->mwSegOffset[ti][si] = pSt->mwBoardsUsed[ti];
-    pSt->mwSegSize[ti][si]   = written;
-    pSt->mwSegCount[ti]++;
-    pSt->mwBoardsUsed[ti]   += (size_t)written;
+    // Record black segment
+    if (blackCount > 0)
+    {
+        int bs = pSt->mwBlackSegCount[ti]++;
+        pSt->mwBlackSegOffset[ti][bs] = pSt->mwBlackBoardsUsed[ti];
+        pSt->mwBlackSegSize[ti][bs]   = blackCount;
+        pSt->mwBlackBoardsUsed[ti]   += (size_t)blackCount;
+    }
 
-    pSt->levelStats[pSt->playLevel].boardsReceivedFromGpu += (uint64_t)written;
+    // Record white segment
+    if (whiteCount > 0)
+    {
+        int ws = pSt->mwWhiteSegCount[ti]++;
+        pSt->mwWhiteSegOffset[ti][ws] = whiteStart;
+        pSt->mwWhiteSegSize[ti][ws]   = whiteCount;
+        pSt->mwWhiteBoardsUsed[ti]   += (size_t)whiteCount;
+    }
 
-    // Flush to disk if the buffer can't fit another worst-case GPU flush,
-    // or if we've reached the segment count limit
-    bool bufferFull = (pSt->mwBoardsUsed[ti] + pSt->gpuAccumCapacity) * sizeof(BOARD_KEY)
-                      > pSt->mwBufferSize;
-    bool segsMaxed  = pSt->mwSegCount[ti] >= MAX_MW_SEGS;
+    pSt->levelStats[pSt->playLevel].boardsReceivedFromGpu += (uint64_t)(blackCount + whiteCount);
+
+    // Flush if the buffer can't fit another worst-case GPU accumulator fill,
+    // or if we have reached the per-player segment count limit.
+    bool bufferFull = (pSt->mwBlackBoardsUsed[ti] + pSt->mwWhiteBoardsUsed[ti]
+                       + pSt->gpuAccumCapacity) * sizeof(BOARD_KEY_DISK) > pSt->mwBufferSize;
+    bool segsMaxed  = (pSt->mwBlackSegCount[ti] >= MAX_MW_SEGS)
+                   || (pSt->mwWhiteSegCount[ti] >= MAX_MW_SEGS);
 
     if (bufferFull || segsMaxed)
         FlushMergeWriterBuffer(ti, pCtx);
@@ -75,14 +86,13 @@ void SubmitMergeWriterJob(PSolveContext pCtx, PFlushDescriptor pDesc)
     );
 }
 
-// Called from the main level loop after the merge-writer pool is idle.
-// Flushes any remaining accumulated segments for each thread to disk.
+// Flush any remaining accumulated segments for every thread.
 void FlushAllMergeWriterBuffers(PSolveContext pCtx)
 {
     POthelloLevelBlasterState pSt = pCtx->pState;
     for (int ti = 0; ti < (int)pSt->numMergeWriters; ti++)
     {
-        if (pSt->mwSegCount[ti] > 0)
+        if (pSt->mwBlackSegCount[ti] > 0 || pSt->mwWhiteSegCount[ti] > 0)
             FlushMergeWriterBuffer(ti, pCtx);
     }
 }
@@ -91,12 +101,21 @@ void FlushAllMergeWriterBuffers(PSolveContext pCtx)
 // Helpers used by the GPU feeder job
 // ============================================================================
 
-static int EnumerateLevelFiles(const char* storeDir, uint8_t level,
-                               char** pOutPaths, int maxFiles)
+// Enumerate BLF store files for a given level and player into pOutPaths[].
+// Returns the count found.
+static int EnumerateStoreFilesForLevel(const char* storeDir, int boardSize,
+                                        int level, int player,
+                                        char** pOutPaths, int maxFiles)
 {
     char pattern[MAX_FULL_PATH_NAME];
-    snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_file_*.bin",
-             storeDir, (int)level);
+    BLFPatternStoreFiles(pattern, sizeof(pattern), storeDir, boardSize, level, player);
+
+    // Extract directory component from the pattern
+    char dir[MAX_FULL_PATH_NAME];
+    strncpy_s(dir, sizeof(dir), pattern, _TRUNCATE);
+    char* lastSlash = strrchr(dir, '\\');
+    if (!lastSlash) return 0;
+    *lastSlash = '\0';
 
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
@@ -107,10 +126,10 @@ static int EnumerateLevelFiles(const char* storeDir, uint8_t level,
     {
         if (count >= maxFiles) break;
         char full[MAX_FULL_PATH_NAME];
-        snprintf(full, sizeof(full), "%s\\%s", storeDir, fd.cFileName);
-        pOutPaths[count] = (char*)MemMalloc("levelFile path", strlen(full) + 1);
+        snprintf(full, sizeof(full), "%s\\%s", dir, fd.cFileName);
+        pOutPaths[count] = (char*)MemMalloc("levelFilePath", strlen(full) + 1);
         if (!pOutPaths[count])
-            Fatal(FATAL_ALLOCATION_FAILED, "EnumerateLevelFiles: cannot allocate path");
+            Fatal(FATAL_ALLOCATION_FAILED, "EnumerateStoreFilesForLevel: cannot allocate path");
         strcpy(pOutPaths[count], full);
         count++;
     } while (FindNextFileA(h, &fd));
@@ -125,7 +144,6 @@ static void FlushAccumulator(GpuAccumulator* pAccum, PSolveContext pCtx)
 
     int uniqueCount = GpuFlushPrepare(pAccum);
 
-    // Game-logic stats are valid even when uniqueCount == 0 (e.g. all-terminal last level)
     pCtx->pState->levelStats[pCtx->pState->playLevel].passBoards     += GpuFlushPassBoards(pAccum);
     pCtx->pState->levelStats[pCtx->pState->playLevel].terminalBoards += GpuFlushTermBoards(pAccum);
     uint32_t flushMax = GpuFlushMaxMoves(pAccum);
@@ -147,7 +165,8 @@ static void FlushAccumulator(GpuAccumulator* pAccum, PSolveContext pCtx)
         Fatal(FATAL_ALLOCATION_FAILED, "FlushAccumulator: cannot allocate FlushDescriptor");
 
     pDesc->pAccum      = pAccum;
-    pDesc->uniqueCount = uniqueCount;
+    pDesc->blackCount  = GpuFlushBlackCount(pAccum);
+    pDesc->whiteCount  = GpuFlushWhiteCount(pAccum);
     pDesc->hDoneEvent  = CreateEventA(nullptr, FALSE, FALSE, nullptr);
     if (!pDesc->hDoneEvent)
         Fatal(FATAL_ALLOCATION_FAILED, "FlushAccumulator: cannot create done event");
@@ -162,6 +181,12 @@ static void FlushAccumulator(GpuAccumulator* pAccum, PSolveContext pCtx)
 
 // ============================================================================
 // GPU feeder job
+//
+// Two sub-passes per level: first processes all black-turn input files
+// (playerBit = BLF_PLAYER_BLACK), then all white-turn files
+// (playerBit = BLF_PLAYER_WHITE).  The MW buffer accumulates boards from
+// both players concurrently via its two-stack layout, so no mid-level flush
+// between sub-passes is required.
 // ============================================================================
 
 static void RunGpuFeederJob(uint32_t /*thdIdx*/, PSolveContext pCtx, uint8_t level)
@@ -173,28 +198,37 @@ static void RunGpuFeederJob(uint32_t /*thdIdx*/, PSolveContext pCtx, uint8_t lev
     const int    optBatch    = pMI->g_gpuInfo.optimalBatchSize;
     const int    maxMoves    = GetMaxMovesForBoardSize(pCfg->boardSize);
     const size_t totalGpuMem = pMI->g_gpuInfo.totalGlobalMemBytes;
+    const int    boardSize   = (int)pCfg->boardSize;
 
-    BOARD_KEY* pingPong = (BOARD_KEY*)pSt->pPingPongBuffer;
-    BOARD_KEY* slots[PING_PONG_SLOTS];
+    BOARD_KEY_DISK* pingPong = (BOARD_KEY_DISK*)pSt->pPingPongBuffer;
+    BOARD_KEY_DISK* slots[PING_PONG_SLOTS];
     for (int i = 0; i < PING_PONG_SLOTS; i++)
         slots[i] = pingPong + (size_t)i * (size_t)optBatch;
 
     GpuAccumulator* pAccum = GpuAccumulatorCreate(optBatch, maxMoves, totalGpuMem);
 
     static const int kMaxFiles = 65536;
-    char** levelFiles = (char**)MemMalloc("levelFiles", (size_t)kMaxFiles * sizeof(char*));
-    if (!levelFiles)
-        Fatal(FATAL_ALLOCATION_FAILED, "GpuFeederJob: cannot allocate file list");
+    char** blackFiles = (char**)MemMalloc("blackFiles", (size_t)kMaxFiles * sizeof(char*));
+    char** whiteFiles = (char**)MemMalloc("whiteFiles", (size_t)kMaxFiles * sizeof(char*));
+    if (!blackFiles || !whiteFiles)
+        Fatal(FATAL_ALLOCATION_FAILED, "GpuFeederJob: cannot allocate file lists");
 
-    int numFiles = EnumerateLevelFiles(pSt->storeDirectory, level, levelFiles, kMaxFiles);
+    int numBlack = EnumerateStoreFilesForLevel(pSt->storeDirectory, boardSize, level,
+                                               BLF_PLAYER_BLACK, blackFiles, kMaxFiles);
+    int numWhite = EnumerateStoreFilesForLevel(pSt->storeDirectory, boardSize, level,
+                                               BLF_PLAYER_WHITE, whiteFiles, kMaxFiles);
 
-    // Pre-scan files so StatsListener can show solve-phase % progress.
-    // BLFOpen only seeks to the trailer (cheap even on NAS).
+    // Pre-scan for StatsListener solve-phase % progress
     {
         uint64_t total = 0;
-        for (int fi = 0; fi < numFiles; fi++)
+        for (int fi = 0; fi < numBlack; fi++)
         {
-            BLFReader* r = BLFOpen(levelFiles[fi]);
+            BLFReader* r = BLFOpen(blackFiles[fi]);
+            if (r) { total += BLFTrailer(r)->recordCount; BLFClose(&r); }
+        }
+        for (int fi = 0; fi < numWhite; fi++)
+        {
+            BLFReader* r = BLFOpen(whiteFiles[fi]);
             if (r) { total += BLFTrailer(r)->recordCount; BLFClose(&r); }
         }
         pSt->currentLevelTotalBoards = total;
@@ -202,13 +236,14 @@ static void RunGpuFeederJob(uint32_t /*thdIdx*/, PSolveContext pCtx, uint8_t lev
 
     int slotIdx = 0;
 
-    for (int fi = 0; fi < numFiles && !pSt->terminateThreads; fi++)
+    // Sub-pass 1: black-turn input boards -> playerBit = BLF_PLAYER_BLACK
+    for (int fi = 0; fi < numBlack && !pSt->terminateThreads; fi++)
     {
-        BLFReader* r = BLFOpen(levelFiles[fi]);
+        BLFReader* r = BLFOpen(blackFiles[fi]);
         if (!r)
         {
-            LoggerLog("GpuFeederJob: WARNING cannot open '%s', skipping\n", levelFiles[fi]);
-            MemFree(levelFiles[fi]);
+            LoggerLog("GpuFeederJob: WARNING cannot open '%s', skipping\n", blackFiles[fi]);
+            MemFree(blackFiles[fi]);
             continue;
         }
 
@@ -222,18 +257,48 @@ static void RunGpuFeederJob(uint32_t /*thdIdx*/, PSolveContext pCtx, uint8_t lev
             if (!GpuAccumulatorHasRoom(pAccum, got))
                 FlushAccumulator(pAccum, pCtx);
 
-            GpuProcessBatch(pAccum, slots[slotIdx], got);
+            GpuProcessBatch(pAccum, slots[slotIdx], got, BLF_PLAYER_BLACK);
             slotIdx = (slotIdx + 1) % PING_PONG_SLOTS;
         }
 
         BLFClose(&r);
-        MemFree(levelFiles[fi]);
+        MemFree(blackFiles[fi]);
+    }
+
+    // Sub-pass 2: white-turn input boards -> playerBit = BLF_PLAYER_WHITE
+    for (int fi = 0; fi < numWhite && !pSt->terminateThreads; fi++)
+    {
+        BLFReader* r = BLFOpen(whiteFiles[fi]);
+        if (!r)
+        {
+            LoggerLog("GpuFeederJob: WARNING cannot open '%s', skipping\n", whiteFiles[fi]);
+            MemFree(whiteFiles[fi]);
+            continue;
+        }
+
+        while (!pSt->terminateThreads)
+        {
+            int got = BLFRead(r, slots[slotIdx], optBatch);
+            if (got == 0) break;
+
+            pSt->levelStats[pSt->playLevel].boardsReadFromStore += (uint64_t)got;
+
+            if (!GpuAccumulatorHasRoom(pAccum, got))
+                FlushAccumulator(pAccum, pCtx);
+
+            GpuProcessBatch(pAccum, slots[slotIdx], got, BLF_PLAYER_WHITE);
+            slotIdx = (slotIdx + 1) % PING_PONG_SLOTS;
+        }
+
+        BLFClose(&r);
+        MemFree(whiteFiles[fi]);
     }
 
     if (!pSt->terminateThreads)
         FlushAccumulator(pAccum, pCtx);
 
-    MemFree(levelFiles);
+    MemFree(blackFiles);
+    MemFree(whiteFiles);
     GpuAccumulatorDestroy(pAccum);
 }
 

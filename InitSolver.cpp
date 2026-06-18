@@ -1,5 +1,6 @@
 #include "InitSolver.h"
 #include "BlasterFile.h"
+#include "BlasterFileName.h"
 #include "OthelloBasics.h"
 #include "Utility.h"
 #include <windows.h>
@@ -45,9 +46,9 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     pState->terminateThreads = false;
     size_t availableMemoryToAllocate = pMachineInfo->g_memInfo.budgetedSize;
 
-    // Four batch-sized quarters: reader keeps 3 filled while GPU reads the other
+    // Four batch-sized slots: reader keeps 3 filled while GPU reads the other
     pState->pingPongBufferSize = (size_t)pMachineInfo->g_gpuInfo.optimalBatchSize
-                                 * sizeof(BOARD_KEY) * 4;
+                                 * sizeof(BOARD_KEY_DISK) * 4;
 
     if (pState->pingPongBufferSize > availableMemoryToAllocate)
         Fatal(FATAL_INSUFFICIENT_MEMORY,
@@ -110,7 +111,8 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
              pConfig->storeDrive, pConfig->storeDirNameNoDrive);
     snprintf(pState->storeMergeDirectory, MAX_FULL_PATH_NAME, "%c:%s\\storeMergeDir",
              pConfig->storeDrive, pConfig->storeDirNameNoDrive);
-    pState->storeMergeFileCount = 0;
+    pState->storeMergeBlackFileCount = 0;
+    pState->storeMergeWhiteFileCount = 0;
 
     // Build per-drive stats
     pState->numWriterDrives = 0;
@@ -139,13 +141,12 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     }
 
     // GPU accumulator worst-case capacity (boards) — used by merge-writer HasRoom check.
-    // Mirrors the formula in GpuAccumulatorCreate: per-slot cost = 73 bytes across all
-    // device arrays; remainder after expansion array goes to the accumulation buffer.
+    // Mirrors the formula in GpuAccumulatorCreate: per-slot cost = 57 bytes; expand
+    // overhead is batchSize*16 + 8 bytes (d_input + two atomic counters).
     const size_t gpuBudget    = pMachineInfo->g_gpuInfo.totalGlobalMemBytes * 8 / 10;
     const size_t expandBytes  = (size_t)pMachineInfo->g_gpuInfo.optimalBatchSize
-                                * (size_t)GetMaxMovesForBoardSize(pConfig->boardSize)
-                                * sizeof(BOARD_KEY);
-    pState->gpuAccumCapacity  = (gpuBudget - expandBytes) / 73;
+                                * sizeof(BOARD_KEY_DISK) + 2 * sizeof(uint32_t);
+    pState->gpuAccumCapacity  = (gpuBudget - expandBytes) / 57;
 
     // Merge-writer buffers: one per thread, fixed at mwBufSize.
     // Store buffer gets whatever RAM remains.
@@ -156,9 +157,12 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     // Segment tracking is implicitly zero-initialized via g_state = {}; verify explicitly.
     for (int i = 0; i < (int)pState->numMergeWriters; i++)
     {
-        pState->mwSegCount[i]   = 0;
-        pState->mwBoardsUsed[i] = 0;
-        pState->mwFileCount[i]  = 0;
+        pState->mwBlackSegCount[i]   = 0;
+        pState->mwBlackBoardsUsed[i] = 0;
+        pState->mwWhiteSegCount[i]   = 0;
+        pState->mwWhiteBoardsUsed[i] = 0;
+        pState->mwBlackFileCount[i]  = 0;
+        pState->mwWhiteFileCount[i]  = 0;
     }
 
     double totalAllocGB = (pState->pingPongBufferSize + pState->storeBufferSize
@@ -191,21 +195,31 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
 
 static int ScanForResumeLevel(POthelloLevelBlasterState pState)
 {
+    // A level is complete when its black store file (index 0) exists and is valid.
+    // The white store file is optional (some levels may have only one player stream).
+    // Board size is unknown at scan time, so we match any board size via wildcard:
+    // "Level_NNNN_*_black_0000.blf".
     for (int level = 0; level < MAX_LEVELS; level++)
     {
-        char path[MAX_FULL_PATH_NAME];
-        snprintf(path, sizeof(path), "%s\\Level_%04d_file_0000.bin",
+        char pattern[MAX_FULL_PATH_NAME];
+        snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_black_0000.blf",
                  pState->storeDirectory, level);
 
-        if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
-            return level;  // file absent — resume from here
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE)
+            return level;  // no black file for this level — resume from here
+        FindClose(h);
 
-        BLFReader* r = BLFOpen(path);
+        // File exists: validate its trailer
+        char fullPath[MAX_FULL_PATH_NAME];
+        snprintf(fullPath, sizeof(fullPath), "%s\\%s", pState->storeDirectory, fd.cFileName);
+        BLFReader* r = BLFOpen(fullPath);
         if (!r)
         {
-            // File exists but trailer magic is missing — interrupted write; delete and retry level
-            LoggerLog("ScanForResumeLevel: incomplete level %d file, deleting '%s'\n", level, path);
-            DeleteFileA(path);
+            LoggerLog("ScanForResumeLevel: incomplete level %d file, deleting '%s'\n",
+                      level, fullPath);
+            DeleteFileA(fullPath);
             return level;
         }
         BLFClose(&r);

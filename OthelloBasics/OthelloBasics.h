@@ -7,8 +7,7 @@ typedef struct _BoardKey
 {
 	unsigned long long  ullCellsInUse;      /* 0-> Not used      1-> Used             */
 	unsigned long long  ullCellColors;      /* 0-> White         1-> Black            */
-	unsigned short      usBoardInfo;        /* 0b0000XXX0        Boardsize (4,6,8)    */
-	                                        /* 0b0000000X        Next Player 1->Black */
+	unsigned short      usBoardInfo;        /* 0b0000000X        Next Player 1->Black */
 	                                        /*                               0->White */
 	unsigned short      _pad1[3];           /* explicit alignment padding             */
 } BOARD_KEY, * PBOARD_KEY;
@@ -19,8 +18,7 @@ typedef struct _Board
 {
 	unsigned long long  ullCellsInUse;      /* 0-> Not used      1-> Used             */
 	unsigned long long  ullCellColors;      /* 0-> White         1-> Black            */
-	unsigned short      usBoardInfo;        /* 0b0000XXX0        Boardsize (4,6,8)    */
-	                                        /* 0b0000000X        Next Player 1->Black */
+	unsigned short      usBoardInfo;        /* 0b0000000X        Next Player 1->Black */
 	                                        /*                               0->White */
 	unsigned short      _pad1[3];           /* explicit alignment padding             */
 	unsigned long long  ullPossibleMoves;   /* 0-> No move       1-> Can play         */
@@ -45,8 +43,7 @@ typedef struct _Move
 {
 	unsigned long long  ullCellsInUseParent;/* 0-> Not used      1-> Used             */
 	unsigned long long  ullCellColorsParent;/* 0-> White         1-> Black            */
-	unsigned short      usBoardInfoParent;  /* 0b0000XXX0        Boardsize (4,6,8)    */
-											/* 0b0000000X        Next Player 1->Black */
+	unsigned short      usBoardInfoParent;  /* 0b0000000X        Next Player 1->Black */
 											/*                               0->White */
 	unsigned short      usMoveIdx;          /* 100 -> Just a change in players         */
 	                                        /* Otherwise 0->63 starting in upper left */
@@ -54,8 +51,7 @@ typedef struct _Move
 	unsigned int        _pad1;              /* explicit alignment padding             */
 	unsigned long long  ullCellsInUseResult;/* 0-> Not used      1-> Used             */
 	unsigned long long  ullCellColorsResult;/* 0-> White         1-> Black            */
-	unsigned short      usBoardInfoResult;  /* 0b0000XXX0        Boardsize (4,6,8)    */
-											/* 0b0000000X        Next Player 1->Black */
+	unsigned short      usBoardInfoResult;  /* 0b0000000X        Next Player 1->Black */
 											/*                               0->White */
 	unsigned short      _pad2[3];           /* explicit trailing padding              */
 } MOVE, * PMOVE;
@@ -67,22 +63,6 @@ typedef struct _Move
 #define GETINDEX(row,col)                  ((row * 8) + col)
 #define GETROWFROMINDEX(idx)               ((idx) / 8)
 #define GETCOLFROMINDEX(idx)               ((idx) % 8)
-
-/* Size macros */
-#define GETBOARDSIZESHORT(val)              ((val) & 0x0E)
-#define GETBOARDSIZE(pBoard)				GETBOARDSIZESHORT((pBoard)->usBoardInfo)
-#define SETBOARDSIZESHORT(val,size)         (val) = (((val) & 0xF1) | (size))
-#define SETBOARDSIZE(pBoard,size)			SETBOARDSIZESHORT((pBoard)->usBoardInfo,size)
-#define GETMOVEBOARDSIZE(pMove)				GETBOARDSIZESHORT((pMove)->usBoardInfoParent)
-#define SETMOVEBOARDSIZE(pMove,size)		SETBOARDSIZESHORT((pMove)->usBoardInfoParent,size)
-
-/* Index Calculator for board size */
-#define GETBOARDSTARTIDXSHORT(val)          ((8 - GETBOARDSIZESHORT(val)) / 2)
-#define GETBOARDSTARTIDX(pBoard)            ((8 - GETBOARDSIZE(pBoard)) / 2)
-#define GETBOARDENDIDXSHORT(val)            (8 - ((8 - GETBOARDSIZESHORT(val)) / 2))
-#define GETBOARDENDIDX(pBoard)              (8 - ((8 - GETBOARDSIZE(pBoard)) / 2))
-#define GETMOVEBOARDSTARTIDX(pMove)         ((8 - GETMOVEBOARDSIZE(pMove)) / 2)
-#define GETMOVEBOARDENDIDX(pMove)           (8 - ((8 - GETMOVEBOARDSIZE(pMove)) / 2))
 
 /* Occupied Macros */
 #define GETNUMINUSE(pBoard)                (int) (__popcnt64((pBoard)->ullCellsInUse))

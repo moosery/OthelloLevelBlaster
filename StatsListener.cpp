@@ -83,17 +83,59 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
     }
     n += snprintf(buf + n, bufSize - n, "\n");
 
-    // Current-level drive breakdown
-    n += snprintf(buf + n, bufSize - n, "  Drv  Dirs  Files   Written      Free\n");
+    // Current-level drive breakdown (cumulative since level start)
+    n += snprintf(buf + n, bufSize - n, "  Drv  Dirs  TotFiles   Written      Free   BlkLive  WhtLive\n");
     for (int i = 0; i < pSt->numWriterDrives; i++)
     {
         const WriterDriveStats* d = &pSt->writerDriveStats[i];
+
+        // Sum live writer file counts across threads on this drive
+        int liveBlack = 0, liveWhite = 0;
+        for (int ti = 0; ti < pSt->numMergeWriters; ti++)
+        {
+            if (pSt->mwDirectory[ti][0] == d->driveLetter)
+            {
+                liveBlack += pSt->mwBlackFileCount[ti];
+                liveWhite += pSt->mwWhiteFileCount[ti];
+            }
+        }
+
         n += snprintf(buf + n, bufSize - n,
-                      "   %c    %2d  %5llu  %7.2f GB  %6.2f GB\n",
+                      "   %c    %2d    %5llu  %7.2f GB  %6.2f GB     %4d     %4d\n",
                       d->driveLetter, d->numDirs,
                       (unsigned long long)d->levelFilesWritten,
                       d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
-                      d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0));
+                      d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0),
+                      liveBlack, liveWhite);
+    }
+
+    // Merge dir free space (F:, etc.)
+    for (int i = 0; i < pSt->numMergeDirs; i++)
+    {
+        char root[4] = { pSt->mergeDirectory[i][0], ':', '\\', '\0' };
+        ULARGE_INTEGER freeBytes = {};
+        GetDiskFreeSpaceExA(root, &freeBytes, nullptr, nullptr);
+        n += snprintf(buf + n, bufSize - n,
+                      "  Merge drv  %c:  free = %.2f GB\n",
+                      pSt->mergeDirectory[i][0],
+                      freeBytes.QuadPart / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    // Active intermediate merges (per writer thread)
+    for (int i = 0; i < pSt->numMergeWriters; i++)
+    {
+        if (pSt->imergeActive[i])
+        {
+            double doneGB  = pSt->imergeDoneInputBytes[i]  / (1024.0 * 1024.0 * 1024.0);
+            double totalGB = pSt->imergeTotalInputBytes[i] / (1024.0 * 1024.0 * 1024.0);
+            double pct     = (pSt->imergeTotalInputBytes[i] > 0)
+                             ? 100.0 * (double)pSt->imergeDoneInputBytes[i]
+                                     / (double)pSt->imergeTotalInputBytes[i]
+                             : 0.0;
+            n += snprintf(buf + n, bufSize - n,
+                          "  iMerge mw[%d] %c:       : %.2f / %.2f GB  (%.1f%%)\n",
+                          i, pSt->mwDirectory[i][0], doneGB, totalGB, pct);
+        }
     }
 
     // Merge progress (only meaningful during end-of-level merge)

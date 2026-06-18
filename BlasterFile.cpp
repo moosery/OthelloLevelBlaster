@@ -1,4 +1,5 @@
 #include "BlasterFile.h"
+#include "Error.h"
 #include "Logger.h"
 #include "Mem.h"
 #include <string.h>
@@ -6,11 +7,11 @@
 
 struct __BLFWriter
 {
-    FILE*     f;
-    uint64_t  count;
-    BOARD_KEY firstKey;
-    BOARD_KEY lastKey;
-    bool      hasFirst;
+    FILE*          f;
+    uint64_t       count;
+    BOARD_KEY_DISK firstKey;
+    BOARD_KEY_DISK lastKey;
+    bool           hasFirst;
 };
 
 BLFWriter* BLFWriterOpen(const char* path)
@@ -28,9 +29,9 @@ BLFWriter* BLFWriterOpen(const char* path)
     return pw;
 }
 
-void BLFWriterRecord(BLFWriter* pw, const BOARD_KEY* pKey)
+void BLFWriterRecord(BLFWriter* pw, const BOARD_KEY_DISK* pKey)
 {
-    if (fwrite(pKey, sizeof(BOARD_KEY), 1, pw->f) != 1)
+    if (fwrite(pKey, sizeof(BOARD_KEY_DISK), 1, pw->f) != 1)
         Fatal(FATAL_FILE_OPEN, "BLFWriterRecord: write failed");
     if (!pw->hasFirst) { pw->firstKey = *pKey; pw->hasFirst = true; }
     pw->lastKey = *pKey;
@@ -43,8 +44,8 @@ uint64_t BLFWriterClose(BLFWriter* pw)
     trailer.recordCount = pw->count;
     if (pw->hasFirst)
     {
-        memcpy(trailer.minKey, &pw->firstKey, sizeof(BOARD_KEY));
-        memcpy(trailer.maxKey, &pw->lastKey,  sizeof(BOARD_KEY));
+        memcpy(trailer.minKey, &pw->firstKey, sizeof(BOARD_KEY_DISK));
+        memcpy(trailer.maxKey, &pw->lastKey,  sizeof(BOARD_KEY_DISK));
     }
     trailer.magic = BLF_MAGIC;
 
@@ -64,13 +65,13 @@ struct __BLFReader
     uint64_t           recordsRead;
 };
 
-void BLFWrite(const char* path, const BOARD_KEY* pBoards, uint64_t count)
+void BLFWrite(const char* path, const BOARD_KEY_DISK* pKeys, uint64_t count)
 {
     FILE* f = fopen(path, "wb");
     if (!f)
         Fatal(FATAL_FILE_OPEN, "BLFWrite: cannot create '%s'", path);
 
-    if (count > 0 && fwrite(pBoards, sizeof(BOARD_KEY), (size_t)count, f) != (size_t)count)
+    if (count > 0 && fwrite(pKeys, sizeof(BOARD_KEY_DISK), (size_t)count, f) != (size_t)count)
     {
         fclose(f);
         Fatal(FATAL_FILE_OPEN, "BLFWrite: record write failed for '%s'", path);
@@ -80,10 +81,10 @@ void BLFWrite(const char* path, const BOARD_KEY* pBoards, uint64_t count)
     trailer.recordCount = count;
     if (count > 0)
     {
-        memcpy(trailer.minKey, &pBoards[0],         sizeof(BOARD_KEY));
-        memcpy(trailer.maxKey, &pBoards[count - 1], sizeof(BOARD_KEY));
+        memcpy(trailer.minKey, &pKeys[0],         sizeof(BOARD_KEY_DISK));
+        memcpy(trailer.maxKey, &pKeys[count - 1], sizeof(BOARD_KEY_DISK));
     }
-    trailer.magic = BLF_MAGIC;   // written last — absence signals incomplete write
+    trailer.magic = BLF_MAGIC;
 
     if (fwrite(&trailer, sizeof(trailer), 1, f) != 1)
     {
@@ -99,7 +100,6 @@ BLFReader* BLFOpen(const char* path)
     FILE* f = fopen(path, "rb");
     if (!f) return nullptr;
 
-    // Seek to trailer position and validate
     if (_fseeki64(f, -(int64_t)sizeof(BlasterFileTrailer), SEEK_END) != 0)
     {
         fclose(f);
@@ -115,8 +115,7 @@ BLFReader* BLFOpen(const char* path)
         return nullptr;
     }
 
-    // Sanity check: file size should match trailer claim
-    int64_t expectedSize = (int64_t)trailer.recordCount * (int64_t)sizeof(BOARD_KEY)
+    int64_t expectedSize = (int64_t)trailer.recordCount * (int64_t)sizeof(BOARD_KEY_DISK)
                          + (int64_t)sizeof(BlasterFileTrailer);
     _fseeki64(f, 0, SEEK_END);
     int64_t actualSize = _ftelli64(f);
@@ -128,7 +127,6 @@ BLFReader* BLFOpen(const char* path)
         return nullptr;
     }
 
-    // Seek back to beginning of records
     if (_fseeki64(f, 0, SEEK_SET) != 0)
     {
         fclose(f);
@@ -149,13 +147,13 @@ BLFReader* BLFOpen(const char* path)
     return r;
 }
 
-int BLFRead(BLFReader* r, BOARD_KEY* pOut, int maxCount)
+int BLFRead(BLFReader* r, BOARD_KEY_DISK* pOut, int maxCount)
 {
     uint64_t remaining = r->trailer.recordCount - r->recordsRead;
     if (remaining == 0 || maxCount <= 0) return 0;
 
     int want = (remaining < (uint64_t)maxCount) ? (int)remaining : maxCount;
-    int got  = (int)fread(pOut, sizeof(BOARD_KEY), (size_t)want, r->f);
+    int got  = (int)fread(pOut, sizeof(BOARD_KEY_DISK), (size_t)want, r->f);
     r->recordsRead += (uint64_t)got;
     return got;
 }
