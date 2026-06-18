@@ -300,6 +300,9 @@ BLFReader* BLFOpen(const char* path)
     r->trailer    = trailer;
     r->compressed = compressed;
 
+    if (!compressed)
+        setvbuf(f, NULL, _IOFBF, BLF_COMP_READ_BUFFER_SIZE);
+
     if (compressed)
     {
         uint64_t compressedBytes = 0;

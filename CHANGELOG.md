@@ -4,6 +4,21 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.5] - 2026-06-18
+
+### Add 1 MB read buffer to BLFOpen (`BlasterFile.cpp`)
+
+Uncompressed readers had no `setvbuf` call, so the CRT used its default 4 KB
+buffer.  `KWayMergeFiles` reads one 16-byte record at a time from the heap, so
+the CRT was issuing tiny reads and seeking between concurrent file positions on
+every heap pop.  On spinning drives (F: cascade temps) this killed throughput.
+
+Added `setvbuf(f, NULL, _IOFBF, BLF_COMP_READ_BUFFER_SIZE)` (1 MB) for
+uncompressed readers immediately after the struct is initialised.  Each reader
+now pulls 1 MB sequentially before repositioning, reducing seeks by ~256x.
+
+---
+
 ## [0.2.4] - 2026-06-18
 
 ### Default to compressed store files
