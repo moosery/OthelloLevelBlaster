@@ -4,6 +4,20 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.6] - 2026-06-19
+
+### Fix GPU feeder not finding .blfz store files (`LevelSolverThread.cpp`)
+
+`EnumerateStoreFilesForLevel` only probed the `*.blf` glob pattern, so when
+compression was active and the end-of-level merge wrote `*.blfz` files, the
+next level's GPU feeder found zero input boards and silently produced no output
+— cascading to every subsequent level also producing nothing.
+
+Same two-line fallback as `ScanForResumeLevel`: if `*.blf` finds nothing, try
+`*.blfz`. `BLFOpen` handles magic dispatch transparently after the file is found.
+
+---
+
 ## [0.2.5] - 2026-06-18
 
 ### Add 1 MB read buffer to BLFOpen (`BlasterFile.cpp`)

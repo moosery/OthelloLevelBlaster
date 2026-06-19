@@ -120,7 +120,13 @@ static int EnumerateStoreFilesForLevel(const char* storeDir, int boardSize,
 
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) return 0;
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        // Also probe for compressed store files.
+        BLFZPatternStoreFiles(pattern, sizeof(pattern), storeDir, boardSize, level, player);
+        h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) return 0;
+    }
 
     int count = 0;
     do
