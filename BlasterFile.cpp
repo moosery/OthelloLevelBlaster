@@ -110,7 +110,7 @@ void BLFWriterRecord(BLFWriter* pw, const BOARD_KEY_DISK* pKey)
     pw->count++;
 }
 
-uint64_t BLFWriterClose(BLFWriter* pw)
+uint64_t BLFWriterClose(BLFWriter* pw, uint64_t* pFileBytes)
 {
     if (pw->compressed)
         FlushVarBuf(pw);
@@ -123,15 +123,18 @@ uint64_t BLFWriterClose(BLFWriter* pw)
         memcpy(trailer.maxKey, &pw->lastKey,  sizeof(BOARD_KEY_DISK));
     }
 
+    uint64_t fileBytes;
     if (pw->compressed)
     {
         memcpy(trailer._reserved, &pw->compBytesTotal, sizeof(uint64_t));
         trailer.magic = BLFZ_MAGIC;
+        fileBytes     = pw->compBytesTotal + sizeof(BlasterFileTrailer);
         MemFree(pw->varBuf);
     }
     else
     {
         trailer.magic = BLF_MAGIC;
+        fileBytes     = pw->count * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer);
     }
 
     if (fwrite(&trailer, sizeof(trailer), 1, pw->f) != 1)
@@ -140,6 +143,7 @@ uint64_t BLFWriterClose(BLFWriter* pw)
 
     uint64_t count = pw->count;
     MemFree(pw);
+    if (pFileBytes) *pFileBytes = fileBytes;
     return count;
 }
 

@@ -130,3 +130,43 @@ static inline void BLFNameCascadeTemp(char* out, size_t outSize,
     snprintf(out, outSize, "%s\\cascade_temp_L%03d_%s_%04d.blf",
              dir, level, BLFPlayerStr(player), fileIdx);
 }
+
+// ── Compressed writer files (.blfz) ─────────────────────────────────────────
+
+static inline void BLFZNameWriterFile(char* out, size_t outSize,
+                                       const char* dir, int player, int fileIdx)
+{
+    snprintf(out, outSize, "%s\\writer_%s_%04d.blfz",
+             dir, BLFPlayerStr(player), fileIdx);
+}
+
+static inline void BLFZPatternWriterFiles(char* out, size_t outSize,
+                                           const char* dir, int player)
+{
+    snprintf(out, outSize, "%s\\writer_%s_*.blfz", dir, BLFPlayerStr(player));
+}
+
+// ── Compressed intermediate merge files (.blfz) ──────────────────────────────
+
+static inline void BLFZNameImergeFile(char* out, size_t outSize,
+                                       const char* dir, int level, int player, int fileIdx)
+{
+    snprintf(out, outSize, "%s\\imerge_L%03d_%s_%04d.blfz",
+             dir, level, BLFPlayerStr(player), fileIdx);
+}
+
+static inline void BLFZPatternImergeFiles(char* out, size_t outSize,
+                                           const char* dir, int level, int player)
+{
+    snprintf(out, outSize, "%s\\imerge_L%03d_%s_*.blfz",
+             dir, level, BLFPlayerStr(player));
+}
+
+// ── Compressed cascade temp files (.blfz) ────────────────────────────────────
+
+static inline void BLFZNameCascadeTemp(char* out, size_t outSize,
+                                        const char* dir, int level, int player, int fileIdx)
+{
+    snprintf(out, outSize, "%s\\cascade_temp_L%03d_%s_%04d.blfz",
+             dir, level, BLFPlayerStr(player), fileIdx);
+}

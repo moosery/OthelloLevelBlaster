@@ -1,7 +1,12 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.7"
+#define VERSION           "0.2.8"
+// Compression mode for BLF output files.
+#define COMPRESS_NONE       0   // all files uncompressed (.blf)
+#define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
+#define COMPRESS_ALL        2   // all files compressed (.blfz)
+
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
@@ -73,7 +78,7 @@ typedef struct __OthelloLevelBlasterConfig
     char     storeDirNameNoDrive[MAX_FULL_PATH_NAME];
     char     storeDrive;
     uint16_t statsPort;
-    bool     compressStoreFiles;   // write .blfz (delta+varint) instead of .blf
+    uint8_t  compressMode;         // COMPRESS_NONE / COMPRESS_STORE_ONLY / COMPRESS_ALL
 } OthelloLevelBlasterConfig, *POthelloLevelBlasterConfig;
 
 typedef struct __OthelloLevelBlasterState

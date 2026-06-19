@@ -355,7 +355,10 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
     LoggerLog("  Store threads      : %d\n", numStoreThreads);
     LoggerLog("  GPU threads        : %d\n", numGPUFeederThreads);
     LoggerLog("  Stats port         : %d\n", (int)pConfig->statsPort);
-    LoggerLog("  Store format       : %s\n", pConfig->compressStoreFiles ? ".blfz (delta+varint compressed)" : ".blf (uncompressed)");
+    LoggerLog("  Store format       : %s\n",
+              pConfig->compressMode == COMPRESS_ALL        ? "all files .blfz (delta+varint compressed)" :
+              pConfig->compressMode == COMPRESS_STORE_ONLY ? "store .blfz, MW/imerge .blf" :
+                                                             "all files .blf (uncompressed)");
     LoggerLog("  Ping-pong buf      : %.1f MB\n",
               pState->pingPongBufferSize / (1024.0 * 1024.0));
     LoggerLog("  MW buf             : %.1f GB x %d threads\n",

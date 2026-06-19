@@ -157,7 +157,8 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
                                  const char* workDir, const char* finalOutPath,
                                  int* pTempCount, int level, int player,
                                  volatile int64_t* pProgressBytes,
-                                 PSolveContext pCtx, bool compressFinal = false)
+                                 PSolveContext pCtx, bool compressFinal = false,
+                                 bool compressIntermediate = false)
 {
     if (numInputs <= MAX_MERGE_FANIN)
         return KWayMergeFiles(inputPaths, numInputs, finalOutPath, pProgressBytes, compressFinal);
@@ -203,16 +204,31 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
         if (pSt) pSt->cascadeGroupProgressBytes[player] = 0;
 
         char tempPath[MAX_FULL_PATH_NAME];
-        BLFNameCascadeTemp(tempPath, sizeof(tempPath), workDir, level, player, (*pTempCount)++);
+        if (compressIntermediate)
+            BLFZNameCascadeTemp(tempPath, sizeof(tempPath), workDir, level, player, (*pTempCount)++);
+        else
+            BLFNameCascadeTemp(tempPath, sizeof(tempPath), workDir, level, player, (*pTempCount)++);
 
         uint64_t tempUnique = KWayMergeFiles(inputPaths + start, groupSize, tempPath,
                                               pSt ? &pSt->cascadeGroupProgressBytes[player]
-                                                  : nullptr);
+                                                  : nullptr,
+                                              compressIntermediate);
 
         if (pSt)
         {
-            int64_t tempActual = (int64_t)(tempUnique * sizeof(BOARD_KEY_DISK)
-                                 + sizeof(BlasterFileTrailer));
+            int64_t tempActual;
+            if (compressIntermediate)
+            {
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                tempActual = (int64_t)sizeof(BlasterFileTrailer);
+                if (GetFileAttributesExA(tempPath, GetFileExInfoStandard, &fad))
+                    tempActual = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
+            }
+            else
+            {
+                tempActual = (int64_t)(tempUnique * sizeof(BOARD_KEY_DISK)
+                             + sizeof(BlasterFileTrailer));
+            }
             tempActualSizes[numTemps] = tempActual;
             // Return the portion of the pre-reserved space that dedup saved.
             DriveReclaim(pSt, workDir[0], groupBytes - tempActual);
@@ -231,7 +247,7 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
 
     uint64_t unique = CascadingMerge(tempPaths, numTemps, workDir, finalOutPath,
                                       pTempCount, level, player, pProgressBytes,
-                                      nullptr, compressFinal);
+                                      nullptr, compressFinal, compressIntermediate);
 
     for (int i = 0; i < numTemps; i++)
     {
@@ -265,6 +281,8 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     bool hasWhite = pSt->mwWhiteSegCount[ti] > 0;
     if (!hasBlack && !hasWhite) return;
 
+    bool compressMW = (pCtx->pConfig->compressMode == COMPRESS_ALL);
+
     BOARD_KEY_DISK* mwBuf = (BOARD_KEY_DISK*)pSt->pMWBuffer[ti];
 
     uint64_t blackCount = 0, whiteCount = 0;
@@ -275,9 +293,13 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     if (hasBlack)
     {
         char blackPath[MAX_FULL_PATH_NAME];
-        BLFNameWriterFile(blackPath, sizeof(blackPath), pSt->mwDirectory[ti],
-                          BLF_PLAYER_BLACK, pSt->mwBlackFileCount[ti]++);
-        BLFWriter* pw = BLFWriterOpen(blackPath);
+        if (compressMW)
+            BLFZNameWriterFile(blackPath, sizeof(blackPath), pSt->mwDirectory[ti],
+                               BLF_PLAYER_BLACK, pSt->mwBlackFileCount[ti]++);
+        else
+            BLFNameWriterFile(blackPath, sizeof(blackPath), pSt->mwDirectory[ti],
+                              BLF_PLAYER_BLACK, pSt->mwBlackFileCount[ti]++);
+        BLFWriter* pw = compressMW ? BLFWriterOpenZ(blackPath) : BLFWriterOpen(blackPath);
 
         std::priority_queue<InMemDiskHead, std::vector<InMemDiskHead>, InMemDiskHeadGreater> heap;
         for (int s = 0; s < pSt->mwBlackSegCount[ti]; s++)
@@ -298,18 +320,23 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
             if (++top.pCurrent < top.pEnd) heap.push(top);
         }
 
-        blackCount = BLFWriterClose(pw);
+        uint64_t blackFileBytes = 0;
+        blackCount = BLFWriterClose(pw, &blackFileBytes);
         if (blackCount == 0) { DeleteFileA(blackPath); pSt->mwBlackFileCount[ti]--; }
-        else { fileBytes += blackCount * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer); filesCreated++; }
+        else { fileBytes += blackFileBytes; filesCreated++; }
     }
 
     // --- White stream: merge sorted runs from the bottom of the buffer ---
     if (hasWhite)
     {
         char whitePath[MAX_FULL_PATH_NAME];
-        BLFNameWriterFile(whitePath, sizeof(whitePath), pSt->mwDirectory[ti],
-                          BLF_PLAYER_WHITE, pSt->mwWhiteFileCount[ti]++);
-        BLFWriter* pw = BLFWriterOpen(whitePath);
+        if (compressMW)
+            BLFZNameWriterFile(whitePath, sizeof(whitePath), pSt->mwDirectory[ti],
+                               BLF_PLAYER_WHITE, pSt->mwWhiteFileCount[ti]++);
+        else
+            BLFNameWriterFile(whitePath, sizeof(whitePath), pSt->mwDirectory[ti],
+                              BLF_PLAYER_WHITE, pSt->mwWhiteFileCount[ti]++);
+        BLFWriter* pw = compressMW ? BLFWriterOpenZ(whitePath) : BLFWriterOpen(whitePath);
 
         std::priority_queue<InMemDiskHead, std::vector<InMemDiskHead>, InMemDiskHeadGreater> heap;
         for (int s = 0; s < pSt->mwWhiteSegCount[ti]; s++)
@@ -330,9 +357,10 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
             if (++top.pCurrent < top.pEnd) heap.push(top);
         }
 
-        whiteCount = BLFWriterClose(pw);
+        uint64_t whiteFileBytes = 0;
+        whiteCount = BLFWriterClose(pw, &whiteFileBytes);
         if (whiteCount == 0) { DeleteFileA(whitePath); pSt->mwWhiteFileCount[ti]--; }
-        else { fileBytes += whiteCount * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer); filesCreated++; }
+        else { fileBytes += whiteFileBytes; filesCreated++; }
     }
 
     // Reset segment tracking for this thread
@@ -373,9 +401,10 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
 
 void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
 {
-    POthelloLevelBlasterState pSt   = pCtx->pState;
-    const char*               mwDir = pSt->mwDirectory[mwIdx];
-    int                       level = (int)pSt->playLevel;
+    POthelloLevelBlasterState pSt       = pCtx->pState;
+    const char*               mwDir     = pSt->mwDirectory[mwIdx];
+    int                       level     = (int)pSt->playLevel;
+    bool                      compressMW = (pCtx->pConfig->compressMode == COMPRESS_ALL);
 
     const int kMaxInputFiles = MAX_MERGE_FANIN * MAX_MERGE_FANIN;
 
@@ -399,6 +428,16 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
         uint64_t playerBytes = 0;
         int numFiles = EnumerateByPattern(pattern, inputPaths, kMaxInputFiles,
                                           &playerBytes, fileSizes);
+        if (compressMW && numFiles < kMaxInputFiles)
+        {
+            BLFZPatternWriterFiles(pattern, sizeof(pattern), mwDir, player);
+            uint64_t extraBytes = 0;
+            int extra = EnumerateByPattern(pattern, inputPaths + numFiles,
+                                           kMaxInputFiles - numFiles,
+                                           &extraBytes, fileSizes + numFiles);
+            numFiles     += extra;
+            playerBytes  += extraBytes;
+        }
         totalInputBytes += playerBytes;
 
         if (numFiles == 0)
@@ -471,10 +510,25 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
             }
 
             char outPath[MAX_FULL_PATH_NAME];
-            BLFNameImergeFile(outPath, sizeof(outPath), destDir, level, player, fileIdx);
+            if (compressMW)
+                BLFZNameImergeFile(outPath, sizeof(outPath), destDir, level, player, fileIdx);
+            else
+                BLFNameImergeFile(outPath, sizeof(outPath), destDir, level, player, fileIdx);
 
-            uint64_t unique = KWayMergeFiles(inputPaths + batchStart, batchCount, outPath, nullptr);
-            int64_t  actual = (int64_t)(unique * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer));
+            uint64_t unique = KWayMergeFiles(inputPaths + batchStart, batchCount, outPath,
+                                              nullptr, compressMW);
+            int64_t actual;
+            if (compressMW)
+            {
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                actual = (int64_t)sizeof(BlasterFileTrailer);
+                if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
+                    actual = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
+            }
+            else
+            {
+                actual = (int64_t)(unique * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer));
+            }
             DriveReclaim(pSt, destLetter, batchBytes - actual);
 
             LoggerLog("IntermediateMerge: [%d..%d] %s -> '%s'  (%llu unique boards)\n",
@@ -512,10 +566,11 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
 
 void DoEndOfLevelMerge(PSolveContext pCtx)
 {
-    POthelloLevelBlasterState  pSt       = pCtx->pState;
-    POthelloLevelBlasterConfig pCfg      = pCtx->pConfig;
-    int                        level     = (int)pSt->playLevel;
-    int                        boardSize = (int)pCfg->boardSize;
+    POthelloLevelBlasterState  pSt            = pCtx->pState;
+    POthelloLevelBlasterConfig pCfg           = pCtx->pConfig;
+    int                        level          = (int)pSt->playLevel;
+    int                        boardSize      = (int)pCfg->boardSize;
+    bool                       compressOutput = (pCfg->compressMode != COMPRESS_NONE);
 
     const int kMaxInputFiles = MAX_MERGE_FANIN * MAX_MERGE_FANIN;
 
@@ -560,6 +615,15 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                                            kMaxInputFiles - numFiles, &d,
                                            data[player].inputSizes + numFiles);
             playerBytes += d;
+            if (pCfg->compressMode == COMPRESS_ALL && numFiles < kMaxInputFiles)
+            {
+                d = 0;
+                BLFZPatternWriterFiles(pat, sizeof(pat), pSt->mwDirectory[i], player);
+                numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
+                                               kMaxInputFiles - numFiles, &d,
+                                               data[player].inputSizes + numFiles);
+                playerBytes += d;
+            }
         }
         for (int i = 0; i < pSt->numMergeDirs && numFiles < kMaxInputFiles; i++)
         {
@@ -569,6 +633,15 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                                            kMaxInputFiles - numFiles, &d,
                                            data[player].inputSizes + numFiles);
             playerBytes += d;
+            if (pCfg->compressMode == COMPRESS_ALL && numFiles < kMaxInputFiles)
+            {
+                d = 0;
+                BLFZPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[i], level, player);
+                numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
+                                               kMaxInputFiles - numFiles, &d,
+                                               data[player].inputSizes + numFiles);
+                playerBytes += d;
+            }
         }
         if (numFiles < kMaxInputFiles)
         {
@@ -578,6 +651,15 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                                            kMaxInputFiles - numFiles, &d,
                                            data[player].inputSizes + numFiles);
             playerBytes += d;
+            if (pCfg->compressMode == COMPRESS_ALL && numFiles < kMaxInputFiles)
+            {
+                d = 0;
+                BLFZPatternImergeFiles(pat, sizeof(pat), pSt->storeMergeDirectory, level, player);
+                numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
+                                               kMaxInputFiles - numFiles, &d,
+                                               data[player].inputSizes + numFiles);
+                playerBytes += d;
+            }
         }
 
         data[player].numFiles   = numFiles;
@@ -664,7 +746,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         }
 
         char outPath[MAX_FULL_PATH_NAME];
-        if (pCfg->compressStoreFiles)
+        if (compressOutput)
             BLFZNameStoreFile(outPath, sizeof(outPath), pSt->storeDirectory,
                               boardSize, level + 1, player, 0);
         else
@@ -673,7 +755,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
 
         if (pd.numFiles == 1)
         {
-            if (!pCfg->compressStoreFiles)
+            if (!compressOutput)
             {
                 BLFReader* r = BLFOpen(pd.inputPaths[0]);
                 if (r) { pd.unique = BLFTrailer(r)->recordCount; BLFClose(&r); }
@@ -689,7 +771,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             }
             else
             {
-                // Compress single input through streaming writer; KWayMergeFiles updates pProg.
+                // Compress (or re-compress) single input through streaming writer; KWayMergeFiles
+                // calls BLFOpen which auto-detects .blf/.blfz from the magic value.
                 pd.unique = KWayMergeFiles(pd.inputPaths, 1, outPath, pProg, true);
                 DeleteFileA(pd.inputPaths[0]);
                 DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
@@ -703,14 +786,15 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         else
         {
             // tempDir was chosen and reserved in Phase 1b.
+            // When compressOutput is on, also compress intermediate cascade temps.
             int tempCount = 0;
             pd.unique = CascadingMerge(pd.inputPaths, pd.numFiles, pd.tempDir, outPath,
                                         &tempCount, level, player, pProg, pCtx,
-                                        pCfg->compressStoreFiles);
+                                        compressOutput, compressOutput);
 
             // Return Y: overestimate; use actual file size for compressed output.
             int64_t actual;
-            if (pCfg->compressStoreFiles)
+            if (compressOutput)
             {
                 WIN32_FILE_ATTRIBUTE_DATA fad = {};
                 actual = 0;

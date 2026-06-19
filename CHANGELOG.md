@@ -4,6 +4,41 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.8] - 2026-06-19
+
+### Compress all files by default (`OthelloTypes.h`, `BlasterFile.h/.cpp`, `BlasterFileName.h`, `MergeFiles.cpp`, `OthelloLevelBlaster.cpp`, `InitSolver.cpp`)
+
+Extends delta+varint compression from store-only output to **every** BLF file the
+solver writes: merge-writer (NVMe) files, intermediate merge files (F:), cascade
+temp files, and final store files (Y:).
+
+**New compression mode flag** (`uint8_t compressMode` replaces `bool compressStoreFiles`):
+- `--compress` (default) — all files written as `.blfz`
+- `--compress-store-only` — only Y: store output compressed; MW/imerge stay `.blf`
+- `--no-compress` — all files uncompressed `.blf`
+
+**Drive space accounting is now accurate** under compression:
+- `BLFWriterClose` gains an optional `pFileBytes` out-parameter that returns the
+  actual bytes written (compressed payload + trailer), so `DriveDebit` in
+  `FlushMergeWriterBuffer` debits the real compressed size rather than the
+  uncompressed estimate.  With smaller NVMe debits the ledger correctly reflects
+  that drives have more room, so intermediate merge triggers later — more boards
+  fit on NVMe before spilling to F:.
+- `DoIntermediateMerge` and `CascadingMerge` use `GetFileAttributesExA` on the
+  output file for the `DriveReclaim` calculation when compression is active.
+- `DriveReserve` always uses worst-case (input size) upfront; the reclaim corrects
+  the overestimate after the write — this safe pattern is unchanged.
+
+**File enumeration** in `DoIntermediateMerge` and `DoEndOfLevelMerge` now probes
+both `*.blf` and `*.blfz` patterns when `COMPRESS_ALL` is active, so a mid-level
+resume after a mode change still picks up all existing files.
+
+**`CascadingMerge`** gains a `compressIntermediate` parameter; when true the
+intermediate group temp files are also written as `.blfz`, and actual temp sizes
+are measured via `GetFileAttributesExA` for accurate `DriveReclaim` calls.
+
+---
+
 ## [0.2.7] - 2026-06-19
 
 ### Show actual vs. uncompressed store size in stats (`OthelloTypes.h`, `MergeFiles.cpp`, `OthelloLevelBlaster.cpp`)

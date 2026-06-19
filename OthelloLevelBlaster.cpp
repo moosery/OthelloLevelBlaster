@@ -25,8 +25,9 @@ static void PrintUsage(const char* prog)
     printf("  --store-dir PATH  Sub-path on store drive (no drive letter)  [default: \\OthelloLevelBlaster\\Store]\n");
     printf("  --cache-dir PATH  Full path for logs and drive-bench cache   [default: C:\\OthelloLevelBlaster\\Cache]\n");
     printf("  --port N          Stats listener TCP port                    [default: 17432]\n");
-    printf("  --compress        Write store files as .blfz (delta+varint, ~7x smaller) [default]\n");
-    printf("  --no-compress     Write store files as .blf (uncompressed)\n");
+    printf("  --compress        Compress all files as .blfz (delta+varint, ~7x smaller) [default]\n");
+    printf("  --compress-store-only  Compress only store (Y:) output; MW/imerge stay .blf\n");
+    printf("  --no-compress     Write all files as .blf (uncompressed)\n");
     printf("  --help            Show this help\n\n");
     printf("Auto-resume: if storeDir already contains level files from a previous run,\n");
     printf("  the solver automatically resumes from the first missing level.\n");
@@ -36,10 +37,10 @@ static void PrintUsage(const char* prog)
 static void ParseArgs(int argc, char* argv[])
 {
     // Defaults
-    g_config.boardSize          = 6;
-    g_config.storeDrive         = 'Y';
-    g_config.statsPort          = 17432;
-    g_config.compressStoreFiles = true;
+    g_config.boardSize    = 6;
+    g_config.storeDrive   = 'Y';
+    g_config.statsPort    = 17432;
+    g_config.compressMode = COMPRESS_ALL;
     strncpy(g_config.useDrives,           "DEFY",                           sizeof(g_config.useDrives)           - 1);
     strncpy(g_config.cacheDirName,        "C:\\OthelloLevelBlaster\\Cache",  sizeof(g_config.cacheDirName)        - 1);
     strncpy(g_config.storeDirNameNoDrive, "\\OthelloLevelBlaster\\Store",    sizeof(g_config.storeDirNameNoDrive) - 1);
@@ -57,11 +58,15 @@ static void ParseArgs(int argc, char* argv[])
 
         if (strcmp(argv[i], "--compress") == 0)
         {
-            g_config.compressStoreFiles = true;
+            g_config.compressMode = COMPRESS_ALL;
+        }
+        else if (strcmp(argv[i], "--compress-store-only") == 0)
+        {
+            g_config.compressMode = COMPRESS_STORE_ONLY;
         }
         else if (strcmp(argv[i], "--no-compress") == 0)
         {
-            g_config.compressStoreFiles = false;
+            g_config.compressMode = COMPRESS_NONE;
         }
         else if (strcmp(argv[i], "--board-size") == 0)
         {

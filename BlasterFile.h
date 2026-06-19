@@ -67,7 +67,9 @@ typedef struct __BLFWriter BLFWriter;
 BLFWriter* BLFWriterOpen(const char* path);
 BLFWriter* BLFWriterOpenZ(const char* path);   // compressed variant
 void       BLFWriterRecord(BLFWriter* pw, const BOARD_KEY_DISK* pKey);
-uint64_t   BLFWriterClose(BLFWriter* pw);
+// Returns the record count.  If pFileBytes is non-null, also stores the actual
+// number of bytes written to the file (compressed or uncompressed payload + trailer).
+uint64_t   BLFWriterClose(BLFWriter* pw, uint64_t* pFileBytes = nullptr);
 
 // Opaque sequential reader.
 typedef struct __BLFReader BLFReader;

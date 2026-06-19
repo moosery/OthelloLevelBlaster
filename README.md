@@ -12,8 +12,8 @@ files on the store drive — one for black-to-move boards and one for white-to-m
 
 ```
 Store drive (Y:)
-  Level_N_black.blf ──┐
-  Level_N_white.blf ──┘
+  Level_N_black.blfz ──┐
+  Level_N_white.blfz ──┘  (or .blf when --no-compress)
          │
     GPU feeder (ping-pong buffer, one batch at a time)
          │
@@ -23,13 +23,13 @@ Store drive (Y:)
          │
     D2H to merge-writer thread (one per NVMe directory)
          │
-    In-memory k-way merge + dedup per player → writer_black_NNNN.blf / writer_white_NNNN.blf
-         │                                      (on D:, E:, ...)
+    In-memory k-way merge + dedup per player → writer_black_NNNN.blfz / writer_white_NNNN.blfz
+         │                                      (on D:, E:, ...; .blf with --no-compress)
          │  [if NVMe low: DoIntermediateMerge → imerge files on F:]
          │
     DoEndOfLevelMerge (parallel: black thread + white thread)
-      ├─ black: CascadingMerge(all black writer + imerge files) → Level_(N+1)_black_0000.blf
-      └─ white: CascadingMerge(all white writer + imerge files) → Level_(N+1)_white_0000.blf
+      ├─ black: CascadingMerge(all black writer + imerge files) → Level_(N+1)_black_0000.blfz
+      └─ white: CascadingMerge(all white writer + imerge files) → Level_(N+1)_white_0000.blfz
                                                                     (both on Y:)
 ```
 
@@ -85,13 +85,16 @@ Outputs:
 ```
 OthelloLevelBlaster.exe [options]
 
-  --board-size N    Board size (e.g. 4 for 4x4, 6 for 6x6)  [default: 6]
-  --drives LETTERS  Drive letters to use, e.g. DEFY           [default: DEFY]
-  --store-drive L   Drive letter for store output             [default: Y]
-  --store-dir PATH  Sub-path on store drive (no drive letter) [default: \OthelloLevelBlaster\Store]
-  --cache-dir PATH  Full path for logs and drive-bench cache  [default: C:\OthelloLevelBlaster\Cache]
-  --port N          Stats listener TCP port                   [default: 17432]
-  --help            Show this help
+  --board-size N         Board size (e.g. 4 for 4x4, 6 for 6x6)      [default: 6]
+  --drives LETTERS       Drive letters to use, e.g. DEFY               [default: DEFY]
+  --store-drive L        Drive letter for store output                 [default: Y]
+  --store-dir PATH       Sub-path on store drive (no drive letter)     [default: \OthelloLevelBlaster\Store]
+  --cache-dir PATH       Full path for logs and drive-bench cache      [default: C:\OthelloLevelBlaster\Cache]
+  --port N               Stats listener TCP port                       [default: 17432]
+  --compress             Compress all files as .blfz (delta+varint)    [default]
+  --compress-store-only  Compress only store (Y:) output; MW/imerge stay .blf
+  --no-compress          Write all files as .blf (uncompressed)
+  --help                 Show this help
 ```
 
 While the solver runs, query live status from another terminal:
@@ -119,11 +122,18 @@ Drives are auto-detected and categorized by benchmark speed.  The cache file
 
 ## File format
 
-Board states are stored in **BLF** (Blaster Level File) format:
+Board states are stored in **BLF** (Blaster Level File) or **BLFZ** (compressed) format.
 
+**BLF** (uncompressed):
 - A sorted array of `BOARD_KEY_DISK` records, **16 bytes each**:
   `uint64_t ullCellsInUse` + `uint64_t ullCellColors`.
-- A 64-byte `BlasterFileTrailer` at the end: magic number, record count, min key, max key.
+- A 64-byte `BlasterFileTrailer` at the end: magic `BLSTFILE`, record count, min/max key.
+
+**BLFZ** (delta+zigzag+varint compressed, default):
+- Delta-encoded then zigzag+varint compressed payload — typically 3–8× smaller than BLF.
+- Same 64-byte trailer with magic `BLSTFILZ`; `_reserved[0..7]` stores the compressed byte count.
+- `BLFOpen` dispatches on the magic value, so readers handle both formats transparently.
+- Compression ratio improves at higher levels as board positions become denser in key-space.
 
 Files are sorted in ascending numeric order matching CUB DeviceRadixSort output.
 Player turn (black-to-move / white-to-move) is encoded in the filename, not the record.
@@ -132,12 +142,13 @@ Player turn (black-to-move / white-to-move) is encoded in the filename, not the 
 
 | Pattern | Description |
 |---------|-------------|
-| `Level_NNNN_SxS_black_0000.blf` | Level N black-to-move store file on Y: |
-| `Level_NNNN_SxS_white_0000.blf` | Level N white-to-move store file on Y: |
-| `writer_black_NNNN.blf` | In-progress flush output from a merge-writer thread |
-| `writer_white_NNNN.blf` | In-progress flush output from a merge-writer thread |
-| `Level_NNNN_imerge_black_NNNN.blf` | Intermediate merge output on F: |
-| `Level_NNNN_cascade_NNNN.blf` | Cascade temp file on F: (deleted after use) |
+| `Level_NNNN_SxS_black_0000.blfz` | Level N black-to-move store file on Y: (compressed) |
+| `Level_NNNN_SxS_white_0000.blfz` | Level N white-to-move store file on Y: (compressed) |
+| `Level_NNNN_SxS_black_0000.blf` | Same, uncompressed (--no-compress) |
+| `writer_black_NNNN.blfz` | In-progress flush output from a merge-writer thread |
+| `writer_white_NNNN.blfz` | In-progress flush output from a merge-writer thread |
+| `imerge_LNNN_black_NNNN.blfz` | Intermediate merge output on F: |
+| `cascade_temp_LNNN_black_NNNN.blfz` | Cascade temp file on F: (deleted after use) |
 
 ## Performance (6×6, RTX 4080 SUPER, v0.2.x)
 
