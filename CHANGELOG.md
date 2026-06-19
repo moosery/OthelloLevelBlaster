@@ -4,6 +4,29 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.9] - 2026-06-19
+
+### Fast Ctrl+C termination; NVMe drive lines show compressed vs uncompressed (`MergeFiles.cpp`, `OthelloTypes.h`, `OthelloLevelBlaster.cpp`)
+
+**Fast shutdown on Ctrl+C** — previously terminating mid-merge could take minutes
+because the merge loops ran to completion with no terminate check.  Now:
+- `KWayMergeFiles` checks `terminateThreads` at the top of every heap iteration
+  and drains open readers cleanly on early exit.
+- `CascadingMerge` checks before starting each group merge so no new groups begin.
+- `DoIntermediateMerge` checks before each 256-file batch.
+- `FlushMergeWriterBuffer` checks in both in-memory heap loops.
+- GPU feeder already checked the flag in its inner loop; no change needed there.
+
+Ctrl+C → full stop in under a second regardless of level size.
+
+**NVMe drive lines now show compressed vs. uncompressed** — `WriterDriveStats`
+gains `levelBytesUncompressed`; `FlushMergeWriterBuffer` tracks both the actual
+bytes written and the uncompressed equivalent.  `LogLevelSummary` shows the same
+`X.XX GB on disk  (Y.YY GB uncompressed equiv)` format as the Y: store line when
+`COMPRESS_ALL` is active.
+
+---
+
 ## [0.2.8] - 2026-06-19
 
 ### Compress all files by default (`OthelloTypes.h`, `BlasterFile.h/.cpp`, `BlasterFileName.h`, `MergeFiles.cpp`, `OthelloLevelBlaster.cpp`, `InitSolver.cpp`)

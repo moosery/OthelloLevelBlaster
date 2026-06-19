@@ -95,7 +95,8 @@ static int EnumerateByPattern(const char* fullPattern, char** outPaths, int maxP
 // File-based k-way merge of player-homogeneous files (all same player).
 // Reads/writes BOARD_KEY_DISK (16 bytes).  Deduplicates on (cellsInUse, cellColors).
 static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* outputPath,
-                                volatile int64_t* pProgressBytes, bool compressed = false)
+                                volatile int64_t* pProgressBytes, bool compressed = false,
+                                const volatile bool* pTerminate = nullptr)
 {
     std::priority_queue<MergeHead, std::vector<MergeHead>, MergeHeadGreater> heap;
 
@@ -120,6 +121,8 @@ static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* out
 
     while (!heap.empty())
     {
+        if (pTerminate && *pTerminate) break;
+
         MergeHead top = heap.top();
         heap.pop();
 
@@ -148,6 +151,13 @@ static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* out
         }
     }
 
+    // Close any readers still in the heap (handles early termination cleanly).
+    while (!heap.empty())
+    {
+        MergeHead top = heap.top(); heap.pop();
+        BLFClose(&top.pReader);
+    }
+
     return BLFWriterClose(pw);
 }
 
@@ -158,10 +168,14 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
                                  int* pTempCount, int level, int player,
                                  volatile int64_t* pProgressBytes,
                                  PSolveContext pCtx, bool compressFinal = false,
-                                 bool compressIntermediate = false)
+                                 bool compressIntermediate = false,
+                                 const volatile bool* pTerminate = nullptr)
 {
+    const volatile bool* pTerm = pCtx ? &pCtx->pState->terminateThreads : pTerminate;
+
     if (numInputs <= MAX_MERGE_FANIN)
-        return KWayMergeFiles(inputPaths, numInputs, finalOutPath, pProgressBytes, compressFinal);
+        return KWayMergeFiles(inputPaths, numInputs, finalOutPath, pProgressBytes,
+                              compressFinal, pTerm);
 
     POthelloLevelBlasterState pSt = pCtx ? pCtx->pState : nullptr;
 
@@ -185,6 +199,8 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
     int numTemps = 0;
     for (int g = 0; g < numGroups; g++)
     {
+        if (pTerm && *pTerm) break;
+
         int start     = g * MAX_MERGE_FANIN;
         int groupSize = (std::min)(MAX_MERGE_FANIN, numInputs - start);
 
@@ -212,7 +228,7 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
         uint64_t tempUnique = KWayMergeFiles(inputPaths + start, groupSize, tempPath,
                                               pSt ? &pSt->cascadeGroupProgressBytes[player]
                                                   : nullptr,
-                                              compressIntermediate);
+                                              compressIntermediate, pTerm);
 
         if (pSt)
         {
@@ -247,7 +263,7 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
 
     uint64_t unique = CascadingMerge(tempPaths, numTemps, workDir, finalOutPath,
                                       pTempCount, level, player, pProgressBytes,
-                                      nullptr, compressFinal, compressIntermediate);
+                                      nullptr, compressFinal, compressIntermediate, pTerm);
 
     for (int i = 0; i < numTemps; i++)
     {
@@ -310,7 +326,7 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
         }
 
         BOARD_KEY_DISK lastKey = {}; bool hasLast = false;
-        while (!heap.empty())
+        while (!heap.empty() && !pCtx->pState->terminateThreads)
         {
             InMemDiskHead top = heap.top(); heap.pop();
             bool dup = hasLast
@@ -347,7 +363,7 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
         }
 
         BOARD_KEY_DISK lastKey = {}; bool hasLast = false;
-        while (!heap.empty())
+        while (!heap.empty() && !pCtx->pState->terminateThreads)
         {
             InMemDiskHead top = heap.top(); heap.pop();
             bool dup = hasLast
@@ -370,6 +386,9 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     pSt->mwWhiteBoardsUsed[ti] = 0;
 
     uint64_t unique = blackCount + whiteCount;
+    uint64_t uncompressedBytes = unique * sizeof(BOARD_KEY_DISK)
+                               + (uint64_t)filesCreated * sizeof(BlasterFileTrailer);
+
     pSt->levelStats[level].boardsWrittenToDisk += unique;
     pSt->levelStats[level].mwFilesCreated      += filesCreated;
     pSt->levelStats[level].mwBytes             += fileBytes;
@@ -382,8 +401,9 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     {
         if (pSt->writerDriveStats[i].driveLetter == driveLetter)
         {
-            pSt->writerDriveStats[i].levelFilesWritten += filesCreated;
-            pSt->writerDriveStats[i].levelBytesWritten += fileBytes;
+            pSt->writerDriveStats[i].levelFilesWritten    += filesCreated;
+            pSt->writerDriveStats[i].levelBytesWritten    += fileBytes;
+            pSt->writerDriveStats[i].levelBytesUncompressed += uncompressedBytes;
             if (DriveAvailable(pSt, driveLetter) < (int64_t)pSt->writerDriveStats[i].threshold)
                 DoIntermediateMerge(ti, pCtx);
             break;
@@ -463,7 +483,7 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
         pSt->imergeTotalInputBytes[mwIdx] += playerBytes;
 
         int batchStart = 0;
-        while (batchStart < numFiles)
+        while (batchStart < numFiles && !pSt->terminateThreads)
         {
             int      batchCount = (std::min)(MAX_MERGE_FANIN, numFiles - batchStart);
             int64_t  batchBytes = 0;
@@ -516,7 +536,7 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
                 BLFNameImergeFile(outPath, sizeof(outPath), destDir, level, player, fileIdx);
 
             uint64_t unique = KWayMergeFiles(inputPaths + batchStart, batchCount, outPath,
-                                              nullptr, compressMW);
+                                              nullptr, compressMW, &pSt->terminateThreads);
             int64_t actual;
             if (compressMW)
             {
@@ -773,7 +793,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             {
                 // Compress (or re-compress) single input through streaming writer; KWayMergeFiles
                 // calls BLFOpen which auto-detects .blf/.blfz from the magic value.
-                pd.unique = KWayMergeFiles(pd.inputPaths, 1, outPath, pProg, true);
+                pd.unique = KWayMergeFiles(pd.inputPaths, 1, outPath, pProg, true,
+                                           &pSt->terminateThreads);
                 DeleteFileA(pd.inputPaths[0]);
                 DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
                 WIN32_FILE_ATTRIBUTE_DATA fad = {};

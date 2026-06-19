@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.8"
+#define VERSION           "0.2.9"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
@@ -28,7 +28,8 @@ typedef struct __WriterDriveStats
     uint64_t threshold;
     uint64_t lastFreeBytes;
     uint64_t levelFilesWritten;
-    uint64_t levelBytesWritten;
+    uint64_t levelBytesWritten;       // actual bytes on disk (compressed when COMPRESS_ALL)
+    uint64_t levelBytesUncompressed;  // uncompressed equivalent (count * 16 + trailers)
 } WriterDriveStats, *PWriterDriveStats;
 
 typedef struct __LevelStats

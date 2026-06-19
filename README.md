@@ -109,6 +109,10 @@ merge progress percentage, cascade progress, and a completed-level history table
 Auto-resume: if the store directory already contains level files from a previous run,
 the solver automatically resumes from the first missing level.
 
+Press **Ctrl+C** for a graceful shutdown — all merge loops check the terminate flag
+and stop within a second.  Partial output files are cleaned up automatically on the
+next run.
+
 ### Drive layout convention
 
 | Drive | Role | Notes |

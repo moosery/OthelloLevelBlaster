@@ -194,11 +194,20 @@ static void LogLevelSummary(int level, PSolveContext pCtx)
     for (int i = 0; i < ls->numDriveSnapshot; i++)
     {
         const WriterDriveStats* d = &ls->driveSnapshot[i];
-        LoggerLog("      %c:  files=%llu  %.2f GB  free=%.2f GB\n",
-                  d->driveLetter,
-                  (unsigned long long)d->levelFilesWritten,
-                  d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
-                  d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0));
+        if (d->levelBytesUncompressed > 0
+            && d->levelBytesUncompressed != d->levelBytesWritten)
+            LoggerLog("      %c:  files=%llu  %.2f GB on disk  (%.2f GB uncompressed equiv)  free=%.2f GB\n",
+                      d->driveLetter,
+                      (unsigned long long)d->levelFilesWritten,
+                      d->levelBytesWritten      / (1024.0 * 1024.0 * 1024.0),
+                      d->levelBytesUncompressed / (1024.0 * 1024.0 * 1024.0),
+                      d->lastFreeBytes          / (1024.0 * 1024.0 * 1024.0));
+        else
+            LoggerLog("      %c:  files=%llu  %.2f GB  free=%.2f GB\n",
+                      d->driveLetter,
+                      (unsigned long long)d->levelFilesWritten,
+                      d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
+                      d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0));
     }
     if (ls->mergeActualBytes > 0 && ls->mergeActualBytes != ls->mergeBytes)
         LoggerLog("      %c:  files=%d  %.2f GB on disk  (%.2f GB uncompressed equiv)  free=%.2f GB\n",
@@ -257,8 +266,9 @@ int main(int argc, char* argv[])
         g_state.currentLevelTotalBoards  = 0;
         for (int i = 0; i < g_state.numWriterDrives; i++)
         {
-            g_state.writerDriveStats[i].levelFilesWritten = 0;
-            g_state.writerDriveStats[i].levelBytesWritten = 0;
+            g_state.writerDriveStats[i].levelFilesWritten      = 0;
+            g_state.writerDriveStats[i].levelBytesWritten      = 0;
+            g_state.writerDriveStats[i].levelBytesUncompressed = 0;
         }
         g_state.levelStats[level] = {};
         ClockStart(&g_state.levelStats[level].startTick);
