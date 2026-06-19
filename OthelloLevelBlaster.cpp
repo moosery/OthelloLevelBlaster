@@ -159,8 +159,9 @@ static void LogLevelSummary(int level, PSolveContext pCtx)
     uint64_t slvNsBrd  = (uint64_t)(ls->solverNanos / (int64_t)brdCount);
     uint64_t mrgNsBrd  = (uint64_t)((ls->totalNanos - ls->solverNanos) / (int64_t)brdCount);
     uint64_t totNsBrd  = (uint64_t)(ls->totalNanos  / (int64_t)brdCount);
-    double   slvGB     = ls->mwBytes    / (1024.0 * 1024.0 * 1024.0);
-    double   mrgGB     = ls->mergeBytes / (1024.0 * 1024.0 * 1024.0);
+    double   slvGB     = ls->mwBytes         / (1024.0 * 1024.0 * 1024.0);
+    double   mrgGB     = ls->mergeActualBytes / (1024.0 * 1024.0 * 1024.0);
+    double   mrgEquivGB = ls->mergeBytes      / (1024.0 * 1024.0 * 1024.0);
 
     LoggerLog(
         "  %2d  %14llu  %14llu  %10llu  %14llu  %14llu  %14llu"
@@ -194,11 +195,18 @@ static void LogLevelSummary(int level, PSolveContext pCtx)
                   d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
                   d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0));
     }
-    LoggerLog("      %c:  files=%d  %.2f GB  free=%.2f GB\n",
-              pCtx->pConfig->storeDrive,
-              ls->mergeBytes > 0 ? 1 : 0,
-              ls->mergeBytes   / (1024.0 * 1024.0 * 1024.0),
-              ls->storeFreeBytes / (1024.0 * 1024.0 * 1024.0));
+    if (ls->mergeActualBytes > 0 && ls->mergeActualBytes != ls->mergeBytes)
+        LoggerLog("      %c:  files=%d  %.2f GB on disk  (%.2f GB uncompressed equiv)  free=%.2f GB\n",
+                  pCtx->pConfig->storeDrive,
+                  ls->mergeBytes > 0 ? 1 : 0,
+                  mrgGB, mrgEquivGB,
+                  ls->storeFreeBytes / (1024.0 * 1024.0 * 1024.0));
+    else
+        LoggerLog("      %c:  files=%d  %.2f GB  free=%.2f GB\n",
+                  pCtx->pConfig->storeDrive,
+                  ls->mergeBytes > 0 ? 1 : 0,
+                  mrgGB,
+                  ls->storeFreeBytes / (1024.0 * 1024.0 * 1024.0));
     LoggerLog("\n");
 }
 

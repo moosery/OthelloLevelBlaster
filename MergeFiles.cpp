@@ -535,6 +535,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         char        tempDrive;        // drive for cascade temps (0 = no cascade)
         const char* tempDir;          // path for cascade temp directory
         int64_t     storeReservation; // bytes pre-reserved on Y: for final output
+        int64_t     actualBytes;      // actual bytes written to the output file
     };
     PlayerData data[2] = {};  // indexed by BLF_PLAYER_WHITE(0) / BLF_PLAYER_BLACK(1)
 
@@ -731,6 +732,12 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             }
         }
 
+        {
+            WIN32_FILE_ATTRIBUTE_DATA fad = {};
+            if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
+                pd.actualBytes = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
+        }
+
         LoggerLog("EndOfLevelMerge: level %d %s -> '%s'  (%llu unique boards)\n",
                   level, BLFPlayerStr(player), outPath, pd.unique);
 
@@ -755,5 +762,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
 
     pSt->levelStats[level].mrgDupsRemoved =
         pSt->levelStats[level].boardsWrittenToDisk - totalUnique;
-    pSt->levelStats[level].mergeBytes = outBytes;
+    pSt->levelStats[level].mergeBytes       = outBytes;
+    pSt->levelStats[level].mergeActualBytes = (uint64_t)(data[BLF_PLAYER_BLACK].actualBytes
+                                                        + data[BLF_PLAYER_WHITE].actualBytes);
 }

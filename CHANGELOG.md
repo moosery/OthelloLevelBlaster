@@ -4,6 +4,20 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.7] - 2026-06-19
+
+### Show actual vs. uncompressed store size in stats (`OthelloTypes.h`, `MergeFiles.cpp`, `OthelloLevelBlaster.cpp`)
+
+Added `mergeActualBytes` to `LevelStats` — populated via `GetFileAttributesExA`
+on the output file(s) after each end-of-level merge.
+
+- **`MrgGB` column** now shows actual bytes on disk (compressed when `.blfz`).
+- **Y: per-drive line** shows both when compression is active:
+  `X.XX GB on disk  (Y.YY GB uncompressed equiv)  free=Z.ZZ GB`
+- Uncompressed runs show the same single-value format as before.
+
+---
+
 ## [0.2.6] - 2026-06-19
 
 ### Fix GPU feeder not finding .blfz store files (`LevelSolverThread.cpp`)

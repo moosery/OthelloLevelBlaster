@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.6"
+#define VERSION           "0.2.7"
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
@@ -44,7 +44,8 @@ typedef struct __LevelStats
 
     // Merge phase (populated after merge; 0 until then)
     uint64_t mrgDupsRemoved;
-    uint64_t mergeBytes;
+    uint64_t mergeBytes;       // uncompressed equivalent (uniqueOut * 16 + trailers)
+    uint64_t mergeActualBytes; // actual bytes written to store drive (compressed if .blfz)
 
     // Game logic
     uint64_t passBoards;
