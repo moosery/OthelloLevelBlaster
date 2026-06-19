@@ -4,6 +4,23 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.10] - 2026-06-19
+
+### Fix merge progress percentage > 100% under compression (`MergeFiles.cpp`)
+
+`mergeTotalInputBytes` was set from `EnumerateByPattern` which returns actual
+bytes on disk.  For compressed `.blfz` inputs those bytes are 3–8× smaller than
+the uncompressed record payload.  `mergeProgressBytes` is incremented by
+`sizeof(BOARD_KEY_DISK)` (16 bytes) per record — uncompressed units — so the
+percentage could reach 170%+ at typical compression ratios.
+
+Fix: after enumerating all input files for both players, open each file briefly
+(reads the 64-byte trailer only) to sum `recordCount * 16`, then replace
+`mergeTotalInputBytes` with that uncompressed-equivalent value.  Progress and
+total are now in the same units regardless of compression mode.
+
+---
+
 ## [0.2.9] - 2026-06-19
 
 ### Fast Ctrl+C termination; NVMe drive lines show compressed vs uncompressed (`MergeFiles.cpp`, `OthelloTypes.h`, `OthelloLevelBlaster.cpp`)

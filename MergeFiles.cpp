@@ -687,6 +687,22 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         pSt->mergeTotalInputBytes += playerBytes;
     }
 
+    // Recompute mergeTotalInputBytes as total uncompressed record bytes.
+    // mergeProgressBytes is incremented by sizeof(BOARD_KEY_DISK) per record, so the
+    // denominator must be in the same units to give a valid percentage.
+    // For compressed inputs playerBytes is the compressed file size — far smaller than
+    // the uncompressed record payload, which would yield percentages far above 100%.
+    {
+        uint64_t totalRecordBytes = 0;
+        for (int player = BLF_PLAYER_WHITE; player <= BLF_PLAYER_BLACK; player++)
+            for (int i = 0; i < data[player].numFiles; i++)
+            {
+                BLFReader* r = BLFOpen(data[player].inputPaths[i]);
+                if (r) { totalRecordBytes += BLFTrailer(r)->recordCount * sizeof(BOARD_KEY_DISK); BLFClose(&r); }
+            }
+        pSt->mergeTotalInputBytes = totalRecordBytes;
+    }
+
     // ── Phase 1b: pre-reserve drive space for both players before any thread starts ──
     // Temp space (cascade intermediates) is reserved on F: if it fits, else Y:.
     // Final output space on Y: is reserved as worst-case (inputBytes) and corrected
