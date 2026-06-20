@@ -594,8 +594,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
 
     const int kMaxInputFiles = MAX_MERGE_FANIN * MAX_MERGE_FANIN;
 
-    pSt->mergeTotalInputBytes = 0;
-    pSt->mergeProgressBytes   = 0;
+    pSt->mergeTotalInputBytes[0] = pSt->mergeTotalInputBytes[1] = 0;
+    pSt->mergeProgressBytes[0]   = pSt->mergeProgressBytes[1]   = 0;
 
     // ── Phase 1: enumerate files for both players (sequential, fast) ─────────
     // We scan first so mergeTotalInputBytes is known before the merge starts,
@@ -684,23 +684,22 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
 
         data[player].numFiles   = numFiles;
         data[player].inputBytes = playerBytes;
-        pSt->mergeTotalInputBytes += playerBytes;
     }
 
-    // Recompute mergeTotalInputBytes as total uncompressed record bytes.
+    // Set mergeTotalInputBytes per player as uncompressed record bytes.
     // mergeProgressBytes is incremented by sizeof(BOARD_KEY_DISK) per record, so the
     // denominator must be in the same units to give a valid percentage.
-    // For compressed inputs playerBytes is the compressed file size — far smaller than
-    // the uncompressed record payload, which would yield percentages far above 100%.
     {
-        uint64_t totalRecordBytes = 0;
         for (int player = BLF_PLAYER_WHITE; player <= BLF_PLAYER_BLACK; player++)
+        {
+            uint64_t playerRecordBytes = 0;
             for (int i = 0; i < data[player].numFiles; i++)
             {
                 BLFReader* r = BLFOpen(data[player].inputPaths[i]);
-                if (r) { totalRecordBytes += BLFTrailer(r)->recordCount * sizeof(BOARD_KEY_DISK); BLFClose(&r); }
+                if (r) { playerRecordBytes += BLFTrailer(r)->recordCount * sizeof(BOARD_KEY_DISK); BLFClose(&r); }
             }
-        pSt->mergeTotalInputBytes = totalRecordBytes;
+            pSt->mergeTotalInputBytes[player] = playerRecordBytes;
+        }
     }
 
     // ── Phase 1b: pre-reserve drive space for both players before any thread starts ──
@@ -766,10 +765,9 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
     // Each thread reads its own input files and writes a separate store file.
     // Progress is updated atomically so the stats display stays accurate.
 
-    volatile int64_t* pProg = &pSt->mergeProgressBytes;
-
     auto mergePlayer = [&](int player)
     {
+        volatile int64_t* pProg = &pSt->mergeProgressBytes[player];
         PlayerData& pd = data[player];
 
         if (pd.numFiles == 0)
@@ -858,6 +856,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
                 pd.actualBytes = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
         }
+        if (pd.unique > 0)
+            InterlockedIncrement((volatile LONG*)&pSt->levelStats[level].mergeFilesWritten);
 
         LoggerLog("EndOfLevelMerge: level %d %s -> '%s'  (%llu unique boards)\n",
                   level, BLFPlayerStr(player), outPath, pd.unique);

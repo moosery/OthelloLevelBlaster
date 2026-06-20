@@ -4,6 +4,35 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.11] - 2026-06-20
+
+### Display: per-player merge progress, store file count, wider ns/brd, drive table with Uncomp GB (`OthelloTypes.h`, `MergeFiles.cpp`, `OthelloLevelBlaster.cpp`, `StatsListener.cpp`)
+
+**Per-player merge progress** — `mergeProgressBytes` and `mergeTotalInputBytes` are now
+`[2]` arrays indexed by `BLF_PLAYER_WHITE(0)` / `BLF_PLAYER_BLACK(1)`.  The per-player
+`pProg` pointer is set inside the `mergePlayer` lambda so each player thread writes to
+its own slot.  The status client current-level row shows `[W: 57%/B: 55%]` instead of
+the previous combined percentage, giving independent progress for each player's merge.
+
+**Correct Y: store file count** — `LevelStats` gains `mergeFilesWritten` (incremented
+via `InterlockedIncrement` after each player writes output; typically 2 = black + white).
+The blaster-log Y: drive line now prints `mergeFilesWritten` instead of
+`ls->mergeBytes > 0 ? 1 : 0`, which always showed 1.
+
+**Wider ns/brd column** — history table `%8llu` widened to `%10llu` (with matching
+header and separator) so 9-digit values at early levels no longer overflow the column.
+
+**Drive table Uncomp GB column** — the status client drive breakdown adds an `Uncomp GB`
+column alongside `Disk GB` when compression is active, so compressed vs. uncompressed
+size is visible at a glance.  Header, separator, and data rows are re-aligned for
+consistent column widths.
+
+**Merge progress line removed** — the separate "Merge progress" line above the level
+history table is gone; the `[W:xx%/B:xx%]` percentage now appears inline in the current
+level's table row, keeping everything in one aligned block.
+
+---
+
 ## [0.2.10] - 2026-06-19
 
 ### Fix merge progress percentage > 100% under compression (`MergeFiles.cpp`)

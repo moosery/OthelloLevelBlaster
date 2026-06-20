@@ -85,7 +85,10 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
     n += snprintf(buf + n, bufSize - n, "\n");
 
     // Current-level drive breakdown (cumulative since level start)
-    n += snprintf(buf + n, bufSize - n, "  Drv  Dirs  TotFiles   Written      Free   BlkLive  WhtLive\n");
+    n += snprintf(buf + n, bufSize - n,
+                  "  Drv  Dirs  Files    Disk GB   Uncomp GB     Free GB  Blk  Wht\n");
+    n += snprintf(buf + n, bufSize - n,
+                  "  ---  ----  -----  ---------  ----------  ----------  ---  ---\n");
     for (int i = 0; i < pSt->numWriterDrives; i++)
     {
         const WriterDriveStats* d = &pSt->writerDriveStats[i];
@@ -101,13 +104,25 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
             }
         }
 
-        n += snprintf(buf + n, bufSize - n,
-                      "   %c    %2d    %5llu  %7.2f GB  %6.2f GB     %4d     %4d\n",
-                      d->driveLetter, d->numDirs,
-                      (unsigned long long)d->levelFilesWritten,
-                      d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
-                      DriveAvailable(pSt, d->driveLetter) / (1024.0 * 1024.0 * 1024.0),
-                      liveBlack, liveWhite);
+        bool showUncomp = (d->levelBytesUncompressed > 0
+                           && d->levelBytesUncompressed != d->levelBytesWritten);
+        if (showUncomp)
+            n += snprintf(buf + n, bufSize - n,
+                          "   %c  %4d  %5llu  %8.2f GB  %9.2f GB  %9.2f GB  %3d  %3d\n",
+                          d->driveLetter, d->numDirs,
+                          (unsigned long long)d->levelFilesWritten,
+                          d->levelBytesWritten      / (1024.0 * 1024.0 * 1024.0),
+                          d->levelBytesUncompressed / (1024.0 * 1024.0 * 1024.0),
+                          DriveAvailable(pSt, d->driveLetter) / (1024.0 * 1024.0 * 1024.0),
+                          liveBlack, liveWhite);
+        else
+            n += snprintf(buf + n, bufSize - n,
+                          "   %c  %4d  %5llu  %8.2f GB            %9.2f GB  %3d  %3d\n",
+                          d->driveLetter, d->numDirs,
+                          (unsigned long long)d->levelFilesWritten,
+                          d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
+                          DriveAvailable(pSt, d->driveLetter) / (1024.0 * 1024.0 * 1024.0),
+                          liveBlack, liveWhite);
     }
 
     // Merge dir free space (F:, etc.) — read from ledger, no OS query
@@ -137,21 +152,9 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
         }
     }
 
-    // Merge progress (only meaningful during end-of-level merge)
-    if (pSt->currentPhase && strcmp(pSt->currentPhase, "Merging to store") == 0
-        && pSt->mergeTotalInputBytes > 0)
-    {
-        double doneGB  = pSt->mergeProgressBytes  / (1024.0 * 1024.0 * 1024.0);
-        double totalGB = pSt->mergeTotalInputBytes / (1024.0 * 1024.0 * 1024.0);
-        double pct     = 100.0 * (double)pSt->mergeProgressBytes / (double)pSt->mergeTotalInputBytes;
-        n += snprintf(buf + n, bufSize - n,
-                      "  Merge progress         : %.2f / %.2f GB  (%.1f%%)\n",
-                      doneGB, totalGB, pct);
-    }
-
     // Cascade progress — shown when CascadingMerge is writing intermediate temp files.
-    // The merge progress counter freezes during these passes (output goes to temp files,
-    // not the final store file), so this gives visibility into what looks like a stalled merge.
+    // That player's merge % (in the history row) will read 0 until the final pass starts;
+    // these lines give visibility into what would otherwise look like a stalled merge.
     for (int p = 0; p <= 1; p++)
     {
         if (pSt->cascadeActive[p])
@@ -178,9 +181,9 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
     // --- Level history table (completed levels + current in-progress row) ---
     n += snprintf(buf + n, bufSize - n, "\n");
     n += snprintf(buf + n, bufSize - n,
-                  "Lvl       BoardsIn      Generated       GpuDups       MrgDups        Written      SlvGB  Duration    ns/brd\n");
+                  "Lvl       BoardsIn      Generated       GpuDups       MrgDups        Written      SlvGB  Duration      ns/brd\n");
     n += snprintf(buf + n, bufSize - n,
-                  "---  -------------  -------------  ------------  ------------  -------------  ---------  --------  --------\n");
+                  "---  -------------  -------------  ------------  ------------  -------------  ---------  --------  ----------\n");
     for (int lvl = pSt->resumeLevel; lvl < curLevel; lvl++)
     {
         const LevelStats* ls = &pSt->levelStats[lvl];
@@ -188,7 +191,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
         uint64_t ns = (ls->boardsReadFromStore > 0)
                       ? (uint64_t)(ls->totalNanos / (int64_t)ls->boardsReadFromStore) : 0;
         n += snprintf(buf + n, bufSize - n,
-                      "%3d  %13llu  %13llu  %12llu  %12llu  %13llu  %9.2f  %8s  %8llu\n",
+                      "%3d  %13llu  %13llu  %12llu  %12llu  %13llu  %9.2f  %8s  %10llu\n",
                       lvl,
                       (unsigned long long)ls->boardsReadFromStore,
                       (unsigned long long)ls->boardsGenerated,
@@ -207,11 +210,14 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
         if (curDone)
             snprintf(phaseStr, sizeof(phaseStr), "[done]");
         else if (pSt->currentPhase
-                 && strcmp(pSt->currentPhase, "Merging to store") == 0
-                 && pSt->mergeTotalInputBytes > 0)
-            snprintf(phaseStr, sizeof(phaseStr), "[merge%5.1f%%]",
-                     100.0 * (double)pSt->mergeProgressBytes
-                           / (double)pSt->mergeTotalInputBytes);
+                 && strcmp(pSt->currentPhase, "Merging to store") == 0)
+        {
+            double wPct = (pSt->mergeTotalInputBytes[0] > 0)
+                ? 100.0 * (double)pSt->mergeProgressBytes[0] / (double)pSt->mergeTotalInputBytes[0] : 0.0;
+            double bPct = (pSt->mergeTotalInputBytes[1] > 0)
+                ? 100.0 * (double)pSt->mergeProgressBytes[1] / (double)pSt->mergeTotalInputBytes[1] : 0.0;
+            snprintf(phaseStr, sizeof(phaseStr), "[W:%3.0f%%/B:%3.0f%%]", wPct, bPct);
+        }
         else if (pSt->currentPhase
                  && strcmp(pSt->currentPhase, "Flushing buffers") == 0)
             snprintf(phaseStr, sizeof(phaseStr), "[flushing]");

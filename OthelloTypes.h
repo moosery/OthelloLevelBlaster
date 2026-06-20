@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.10"
+#define VERSION           "0.2.11"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
@@ -50,6 +50,7 @@ typedef struct __LevelStats
 
     // Merge phase (populated after merge; 0 until then)
     uint64_t mrgDupsRemoved;
+    uint32_t mergeFilesWritten; // store files written this level (0-2; 2 = black + white)
     uint64_t mergeBytes;       // uncompressed equivalent (uniqueOut * 16 + trailers)
     uint64_t mergeActualBytes; // actual bytes written to store drive (compressed if .blfz)
 
@@ -89,8 +90,8 @@ typedef struct __OthelloLevelBlasterState
     bool        terminateThreads;
     bool        terminateStatsListener;
     const char* currentPhase;       // points to a string literal; set by main thread at each phase transition
-    volatile int64_t   mergeProgressBytes;   // bytes written to final merge output (two merge threads write; stats thread reads)
-    uint64_t           mergeTotalInputBytes; // total input bytes for current end-of-level merge (set before threads start)
+    volatile int64_t   mergeProgressBytes[2];   // bytes written per player to final merge output; [0]=white [1]=black
+    uint64_t           mergeTotalInputBytes[2]; // total uncompressed record bytes per player; set before merge threads start
 
     // Per-player cascade progress — populated when CascadingMerge triggers during DoEndOfLevelMerge.
     // Indexed by BLF_PLAYER_WHITE(0) / BLF_PLAYER_BLACK(1).

@@ -154,20 +154,24 @@ Player turn (black-to-move / white-to-move) is encoded in the filename, not the 
 | `imerge_LNNN_black_NNNN.blfz` | Intermediate merge output on F: |
 | `cascade_temp_LNNN_black_NNNN.blfz` | Cascade temp file on F: (deleted after use) |
 
-## Performance (6×6, RTX 4080 SUPER, v0.2.x)
+## Performance (6×6, RTX 4080 SUPER, v0.2.11)
 
-*Early levels only; solve time grows roughly ×4–5 per level.*
+*Measured run: RTX 4080 SUPER, 64 GB RAM, D:/E: NVMe, F: HDD (188 MB/s), Y: NAS (~59 MB/s write).
+Y: (cumul.) = total compressed store size on Y: at end of that level (all levels L0–N).*
 
-| Level | Unique boards | Solve time | Merge time | Total |
-|-------|--------------|------------|------------|-------|
-| 12    | ~251 M       | ~17 s      | ~64 s      | ~80 s  |
-| 13    | ~1.2 B       | ~70 s      | ~310 s     | ~380 s |
-| 14    | ~5.0 B       | ~235 s     | ~1330 s    | ~1565 s |
-| 16    | ~56 B        | ~44 min    | ~60 min    | ~104 min |
+| Level | Unique boards | Solve    | Merge    | Total    | Y: (cumul.) |
+|-------|--------------|----------|----------|----------|-------------|
+| 12    | 251 M        | 5.9 s    | 12.9 s   | 18.8 s   | 1.15 GB     |
+| 13    | 1.21 B       | 23.6 s   | 57.8 s   | 81.4 s   | 5.21 GB     |
+| 14    | 5.01 B       | 1.8 min  | 4.7 min  | 6.4 min  | 20.4 GB     |
+| 15    | 19.8 B       | 5.8 min  | 19.9 min | 25.8 min | 76.9 GB     |
+| 16    | 65.9 B       | 22.2 min | 71.1 min | 93.3 min | 245 GB      |
+| 17    | 203.5 B      | 68.5 min | 6.4 h    | 7.6 h    | 730 GB      |
 
-Store drive Y: write speed (~59 MB/s, PCIe 1) dominates merge time.
-Cascade merge (F: HDD) adds significant time at levels where per-player file
-count exceeds `MAX_MERGE_FANIN=256`.
+Y: NAS write speed (~59 MB/s sustained) dominates merge time through L16.  At L17 the
+per-player file count (~435 files/player) exceeds `MAX_MERGE_FANIN=256`, triggering a
+two-phase cascade merge through F: HDD — that is why merge time jumps from 71 min (L16)
+to 6.4 h (L17).  Compression ratio improves level over level: ~3.3× at L12, ~4.2× at L17.
 
 ## Project layout
 

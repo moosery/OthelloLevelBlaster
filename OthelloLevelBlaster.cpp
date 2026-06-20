@@ -196,29 +196,29 @@ static void LogLevelSummary(int level, PSolveContext pCtx)
         const WriterDriveStats* d = &ls->driveSnapshot[i];
         if (d->levelBytesUncompressed > 0
             && d->levelBytesUncompressed != d->levelBytesWritten)
-            LoggerLog("      %c:  files=%llu  %.2f GB on disk  (%.2f GB uncompressed equiv)  free=%.2f GB\n",
+            LoggerLog("      %c:  files=%4llu  %8.2f GB on disk  (%8.2f GB uncomp)  free=%9.2f GB\n",
                       d->driveLetter,
                       (unsigned long long)d->levelFilesWritten,
                       d->levelBytesWritten      / (1024.0 * 1024.0 * 1024.0),
                       d->levelBytesUncompressed / (1024.0 * 1024.0 * 1024.0),
                       d->lastFreeBytes          / (1024.0 * 1024.0 * 1024.0));
         else
-            LoggerLog("      %c:  files=%llu  %.2f GB  free=%.2f GB\n",
+            LoggerLog("      %c:  files=%4llu  %8.2f GB  free=%9.2f GB\n",
                       d->driveLetter,
                       (unsigned long long)d->levelFilesWritten,
                       d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
                       d->lastFreeBytes     / (1024.0 * 1024.0 * 1024.0));
     }
     if (ls->mergeActualBytes > 0 && ls->mergeActualBytes != ls->mergeBytes)
-        LoggerLog("      %c:  files=%d  %.2f GB on disk  (%.2f GB uncompressed equiv)  free=%.2f GB\n",
+        LoggerLog("      %c:  files=%4u  %8.2f GB on disk  (%8.2f GB uncomp)  free=%9.2f GB\n",
                   pCtx->pConfig->storeDrive,
-                  ls->mergeBytes > 0 ? 1 : 0,
+                  ls->mergeFilesWritten,
                   mrgGB, mrgEquivGB,
                   ls->storeFreeBytes / (1024.0 * 1024.0 * 1024.0));
     else
-        LoggerLog("      %c:  files=%d  %.2f GB  free=%.2f GB\n",
+        LoggerLog("      %c:  files=%4u  %8.2f GB  free=%9.2f GB\n",
                   pCtx->pConfig->storeDrive,
-                  ls->mergeBytes > 0 ? 1 : 0,
+                  ls->mergeFilesWritten,
                   mrgGB,
                   ls->storeFreeBytes / (1024.0 * 1024.0 * 1024.0));
     LoggerLog("\n");
