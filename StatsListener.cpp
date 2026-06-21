@@ -181,9 +181,9 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
     // --- Level history table (completed levels + current in-progress row) ---
     n += snprintf(buf + n, bufSize - n, "\n");
     n += snprintf(buf + n, bufSize - n,
-                  "Lvl       BoardsIn      Generated       GpuDups       MrgDups        Written      SlvGB  Duration      ns/brd\n");
+                  "Lvl        BoardsIn        Generated         GpuDups         MrgDups         Written       SlvGB  Duration      ns/brd\n");
     n += snprintf(buf + n, bufSize - n,
-                  "---  -------------  -------------  ------------  ------------  -------------  ---------  --------  ----------\n");
+                  "---  --------------  ---------------  --------------  --------------  --------------  ----------  --------  ----------\n");
     for (int lvl = pSt->resumeLevel; lvl < curLevel; lvl++)
     {
         const LevelStats* ls = &pSt->levelStats[lvl];
@@ -191,7 +191,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
         uint64_t ns = (ls->boardsReadFromStore > 0)
                       ? (uint64_t)(ls->totalNanos / (int64_t)ls->boardsReadFromStore) : 0;
         n += snprintf(buf + n, bufSize - n,
-                      "%3d  %13llu  %13llu  %12llu  %12llu  %13llu  %9.2f  %8s  %10llu\n",
+                      "%3d  %14llu  %15llu  %14llu  %14llu  %14llu  %10.2f  %8s  %10llu\n",
                       lvl,
                       (unsigned long long)ls->boardsReadFromStore,
                       (unsigned long long)ls->boardsGenerated,
@@ -228,7 +228,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                      100.0 * (double)cur->boardsReadFromStore
                            / (double)pSt->currentLevelTotalBoards);
         n += snprintf(buf + n, bufSize - n,
-                      "%3d  %13llu  %13llu  %12llu  %12llu  %13llu  %9.2f  %8s  %s\n",
+                      "%3d  %14llu  %15llu  %14llu  %14llu  %14llu  %10.2f  %8s  %s\n",
                       curLevel,
                       (unsigned long long)cur->boardsReadFromStore,
                       (unsigned long long)cur->boardsGenerated,

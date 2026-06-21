@@ -4,6 +4,30 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.12] - 2026-06-21
+
+### Fix history table column overflow at L19+ (`StatsListener.cpp`)
+
+`GpuDups` and `MrgDups` columns used `%12llu` (12-char field); at L19 GPU dups
+reach ~2.4 trillion (13 digits), overflowing the field and misaligning all
+subsequent columns.  `Generated` at `%13llu` was also on the edge (L20 will
+exceed it).
+
+All five board-count columns widened:
+
+| Column | Old | New |
+|--------|-----|-----|
+| BoardsIn | `%13llu` | `%14llu` |
+| Generated | `%13llu` | `%15llu` |
+| GpuDups | `%12llu` | `%14llu` |
+| MrgDups | `%12llu` | `%14llu` |
+| Written | `%13llu` | `%14llu` |
+| SlvGB | `%9.2f` | `%10.2f` |
+
+Header and separator lines updated to match.
+
+---
+
 ## [0.2.11] - 2026-06-20
 
 ### Display: per-player merge progress, store file count, wider ns/brd, drive table with Uncomp GB (`OthelloTypes.h`, `MergeFiles.cpp`, `OthelloLevelBlaster.cpp`, `StatsListener.cpp`)
