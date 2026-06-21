@@ -4,6 +4,44 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.14] - 2026-06-21
+
+### Dynamic cascade group sizing — fill F: fully before spilling to Y: (`MergeFiles.cpp`)
+
+v0.2.13 changed *which drive* each group went to but kept group size fixed at 256
+files.  If F: had 400 GB free and a 256-file group needed 500 GB, the entire group
+still fell to Y:.
+
+v0.2.14 makes group size dynamic: for each group, the code queries
+`DriveAvailable` on F: first and counts how many consecutive files from the
+current position fit within that space (up to 256).  It then calls `DriveReserve`
+for exactly that amount.  If F: can hold 180 of the 256 files, those 180 go to F:;
+the remaining 76 start the next group, which tries F: again (dedup savings from the
+previous group may have freed space).
+
+```
+// Per-group drive selection (F: first, Y: only when F: can't fit even one file)
+for each candidate drive d:
+    avail = DriveAvailable(d)
+    count = # consecutive files whose sizes sum to ≤ avail (up to 256)
+    if count > 0 and DriveReserve(d, sum) succeeds:
+        use drive d for 'count' files; break
+```
+
+`DriveReserve` / `DriveReclaim` ledger accounting is identical to before —
+the only change is that group size is now bounded by drive availability rather
+than always being exactly 256.  Groups are still capped at `MAX_MERGE_FANIN`
+so the final k-way pass always fits in a single `KWayMergeFiles` call.
+
+The log now shows file count per group:
+```
+CascadingMerge: black group 1 -> F: (180 files, 312.4 GB input)
+CascadingMerge: black group 2 -> F: ( 76 files, 128.8 GB input)
+CascadingMerge: black group 3 -> Y: (256 files, 408.1 GB input)
+```
+
+---
+
 ## [0.2.13] - 2026-06-21
 
 ### Distribute cascade temp files across F: and Y: instead of all-or-nothing (`MergeFiles.cpp`)
