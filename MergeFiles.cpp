@@ -163,8 +163,13 @@ static uint64_t KWayMergeFiles(char** inputPaths, int numInputs, const char* out
 
 // pCtx is non-null only on the outer call; nullptr is passed for the recursive final-pass
 // call so cascade tracking is not re-entered.
+// tempDirs is an ordered list of candidate directories for cascade temp files
+// (fastest/most-available first), with storeMergeDirectory as the last-resort entry.
+// Each group's temp is placed on the first dir with ledger space, so temps spread
+// naturally across F: and Y: when one drive fills up.
 static uint64_t CascadingMerge(char** inputPaths, int numInputs,
-                                 const char* workDir, const char* finalOutPath,
+                                 const char** tempDirs, int numTempDirs,
+                                 const char* finalOutPath,
                                  int* pTempCount, int level, int player,
                                  volatile int64_t* pProgressBytes,
                                  PSolveContext pCtx, bool compressFinal = false,
@@ -179,9 +184,9 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
 
     POthelloLevelBlasterState pSt = pCtx ? pCtx->pState : nullptr;
 
-    int     numGroups       = (numInputs + MAX_MERGE_FANIN - 1) / MAX_MERGE_FANIN;
-    char**  tempPaths       = (char**)MemMalloc("cascadeTempPaths",
-                                                  (size_t)numGroups * sizeof(char*));
+    int     numGroups        = (numInputs + MAX_MERGE_FANIN - 1) / MAX_MERGE_FANIN;
+    char**  tempPaths        = (char**)MemMalloc("cascadeTempPaths",
+                                                   (size_t)numGroups * sizeof(char*));
     int64_t* tempActualSizes = pSt
         ? (int64_t*)MemMalloc("cascadeTempSizes", (size_t)numGroups * sizeof(int64_t))
         : nullptr;
@@ -204,26 +209,46 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
         int start     = g * MAX_MERGE_FANIN;
         int groupSize = (std::min)(MAX_MERGE_FANIN, numInputs - start);
 
-        // Sum input file sizes for this group so we can reclaim the overestimate.
+        // Sum input file sizes to estimate space needed for this group's temp.
         int64_t groupBytes = 0;
-        if (pSt)
+        for (int k = start; k < start + groupSize; k++)
         {
-            for (int k = start; k < start + groupSize; k++)
+            WIN32_FILE_ATTRIBUTE_DATA fad = {};
+            if (GetFileAttributesExA(inputPaths[k], GetFileExInfoStandard, &fad))
+                groupBytes += ((int64_t)fad.nFileSizeHigh << 32)
+                            | (int64_t)fad.nFileSizeLow;
+        }
+
+        // Pick the first candidate dir with enough ledger space for this group.
+        const char* chosenDir = (numTempDirs > 0) ? tempDirs[0] : nullptr;
+        if (pSt && numTempDirs > 0)
+        {
+            chosenDir = nullptr;
+            for (int d = 0; d < numTempDirs; d++)
             {
-                WIN32_FILE_ATTRIBUTE_DATA fad = {};
-                if (GetFileAttributesExA(inputPaths[k], GetFileExInfoStandard, &fad))
-                    groupBytes += ((int64_t)fad.nFileSizeHigh << 32)
-                                | (int64_t)fad.nFileSizeLow;
+                if (DriveReserve(pSt, tempDirs[d][0], groupBytes))
+                {
+                    chosenDir = tempDirs[d];
+                    break;
+                }
             }
+            if (!chosenDir)
+                Fatal(FATAL_DRIVE_SPACE,
+                      "CascadingMerge: %s group %d needs %.2f GB — no temp drive has room",
+                      BLFPlayerStr(player), g + 1,
+                      groupBytes / (1024.0 * 1024.0 * 1024.0));
+            LoggerLog("CascadingMerge: %s group %d/%d -> %c: (%.2f GB input)\n",
+                      BLFPlayerStr(player), g + 1, numGroups, chosenDir[0],
+                      groupBytes / (1024.0 * 1024.0 * 1024.0));
         }
 
         if (pSt) pSt->cascadeGroupProgressBytes[player] = 0;
 
         char tempPath[MAX_FULL_PATH_NAME];
         if (compressIntermediate)
-            BLFZNameCascadeTemp(tempPath, sizeof(tempPath), workDir, level, player, (*pTempCount)++);
+            BLFZNameCascadeTemp(tempPath, sizeof(tempPath), chosenDir, level, player, (*pTempCount)++);
         else
-            BLFNameCascadeTemp(tempPath, sizeof(tempPath), workDir, level, player, (*pTempCount)++);
+            BLFNameCascadeTemp(tempPath, sizeof(tempPath), chosenDir, level, player, (*pTempCount)++);
 
         uint64_t tempUnique = KWayMergeFiles(inputPaths + start, groupSize, tempPath,
                                               pSt ? &pSt->cascadeGroupProgressBytes[player]
@@ -246,8 +271,8 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
                              + sizeof(BlasterFileTrailer));
             }
             tempActualSizes[numTemps] = tempActual;
-            // Return the portion of the pre-reserved space that dedup saved.
-            DriveReclaim(pSt, workDir[0], groupBytes - tempActual);
+            // Return the portion of the per-group reservation that dedup saved.
+            DriveReclaim(pSt, chosenDir[0], groupBytes - tempActual);
         }
 
         tempPaths[numTemps] = (char*)MemMalloc("cascadeTempPath", strlen(tempPath) + 1);
@@ -261,14 +286,16 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
 
     if (pSt) pSt->cascadeActive[player] = false;
 
-    uint64_t unique = CascadingMerge(tempPaths, numTemps, workDir, finalOutPath,
-                                      pTempCount, level, player, pProgressBytes,
-                                      nullptr, compressFinal, compressIntermediate, pTerm);
+    uint64_t unique = CascadingMerge(tempPaths, numTemps, tempDirs, numTempDirs,
+                                      finalOutPath, pTempCount, level, player,
+                                      pProgressBytes, nullptr, compressFinal,
+                                      compressIntermediate, pTerm);
 
     for (int i = 0; i < numTemps; i++)
     {
-        // Reclaim temp drive space as each temp file is deleted.
-        if (pSt) DriveReclaim(pSt, workDir[0], tempActualSizes[i]);
+        // Use tempPaths[i][0] (drive letter embedded in path) — temps may be
+        // spread across multiple drives so we can't use a single workDir here.
+        if (pSt) DriveReclaim(pSt, tempPaths[i][0], tempActualSizes[i]);
         DeleteFileA(tempPaths[i]);
         MemFree(tempPaths[i]);
     }
@@ -607,8 +634,6 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         int         numFiles;
         uint64_t    inputBytes;
         uint64_t    unique;
-        char        tempDrive;        // drive for cascade temps (0 = no cascade)
-        const char* tempDir;          // path for cascade temp directory
         int64_t     storeReservation; // bytes pre-reserved on Y: for final output
         int64_t     actualBytes;      // actual bytes written to the output file
     };
@@ -702,55 +727,20 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         }
     }
 
-    // ── Phase 1b: pre-reserve drive space for both players before any thread starts ──
-    // Temp space (cascade intermediates) is reserved on F: if it fits, else Y:.
-    // Final output space on Y: is reserved as worst-case (inputBytes) and corrected
-    // after each merge by reclaiming the dedup savings.
+    // ── Phase 1b: pre-reserve Y: store space for both players ────────────────
+    // Cascade temp space is NOT reserved upfront — it is claimed per-group
+    // inside CascadingMerge (filling F: first, spilling to Y: only as needed).
     // All reservations are atomic so both threads can run safely in parallel.
 
     for (int player = BLF_PLAYER_WHITE; player <= BLF_PLAYER_BLACK; player++)
     {
-        PlayerData& pd     = data[player];
-        pd.tempDrive       = 0;
-        pd.tempDir         = nullptr;
+        PlayerData& pd      = data[player];
         pd.storeReservation = 0;
-
         if (pd.numFiles == 0) continue;
 
-        int64_t inputBytes = (int64_t)pd.inputBytes;
-
-        if (pd.numFiles > 1)
-        {
-            // Try each merge dir (F:, etc.) for cascade temp space.
-            bool gotMerge = false;
-            for (int d = 0; d < pSt->numMergeDirs; d++)
-            {
-                if (DriveReserve(pSt, pSt->mergeDirectory[d][0], inputBytes))
-                {
-                    pd.tempDrive = pSt->mergeDirectory[d][0];
-                    pd.tempDir   = pSt->mergeDirectory[d];
-                    gotMerge     = true;
-                    break;
-                }
-            }
-            if (!gotMerge)
-            {
-                // Fall back to Y: for cascade temps.
-                if (!DriveReserve(pSt, pCfg->storeDrive, inputBytes))
-                    Fatal(FATAL_DRIVE_SPACE,
-                          "EndOfLevelMerge: %s cascade temps need %.2f GB — no drive has room",
-                          BLFPlayerStr(player),
-                          inputBytes / (1024.0 * 1024.0 * 1024.0));
-                pd.tempDrive = pCfg->storeDrive;
-                pd.tempDir   = pSt->storeMergeDirectory;
-                LoggerLog("EndOfLevelMerge: %s cascade temps on %c: (%.2f GB, merge drives full)\n",
-                          BLFPlayerStr(player), pCfg->storeDrive,
-                          inputBytes / (1024.0 * 1024.0 * 1024.0));
-            }
-        }
-
         // Reserve Y: for the final store output (worst case = full input size).
-        int64_t storeNeeded = (pd.numFiles == 1) ? (int64_t)pd.inputSizes[0] : inputBytes;
+        int64_t storeNeeded = (pd.numFiles == 1) ? (int64_t)pd.inputSizes[0]
+                                                  : (int64_t)pd.inputBytes;
         if (!DriveReserve(pSt, pCfg->storeDrive, storeNeeded))
             Fatal(FATAL_DRIVE_SPACE,
                   "EndOfLevelMerge: %s store output needs %.2f GB on %c: (%.2f GB available)",
@@ -760,6 +750,16 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                   DriveAvailable(pSt, pCfg->storeDrive) / (1024.0 * 1024.0 * 1024.0));
         pd.storeReservation = storeNeeded;
     }
+
+    // Ordered list of candidate temp dirs: merge drives (F:, etc.) first —
+    // they are faster for writes and reads, and don't consume Y: bandwidth —
+    // then storeMergeDirectory as last resort.  CascadingMerge picks the first
+    // dir with ledger space per group, spreading temps across drives when one fills.
+    const char* tempDirs[MAX_WRITER_DRIVES + 1];
+    int         numTempDirs = 0;
+    for (int d = 0; d < pSt->numMergeDirs; d++)
+        tempDirs[numTempDirs++] = pSt->mergeDirectory[d];
+    tempDirs[numTempDirs++] = pSt->storeMergeDirectory;
 
     // ── Phase 2: merge both players concurrently ─────────────────────────────
     // Each thread reads its own input files and writes a separate store file.
@@ -820,11 +820,11 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         }
         else
         {
-            // tempDir was chosen and reserved in Phase 1b.
+            // Cascade temps are placed greedily per-group (F: first, Y: if needed).
             // When compressOutput is on, also compress intermediate cascade temps.
             int tempCount = 0;
-            pd.unique = CascadingMerge(pd.inputPaths, pd.numFiles, pd.tempDir, outPath,
-                                        &tempCount, level, player, pProg, pCtx,
+            pd.unique = CascadingMerge(pd.inputPaths, pd.numFiles, tempDirs, numTempDirs,
+                                        outPath, &tempCount, level, player, pProg, pCtx,
                                         compressOutput, compressOutput);
 
             // Return Y: overestimate; use actual file size for compressed output.

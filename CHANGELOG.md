@@ -4,6 +4,45 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.13] - 2026-06-21
+
+### Distribute cascade temp files across F: and Y: instead of all-or-nothing (`MergeFiles.cpp`)
+
+Previously `DoEndOfLevelMerge` reserved temp space for all cascade groups on one
+drive before any merge thread started: if F: had room for the full player input, all
+temps went to F:; otherwise all temps went to Y: (NAS).  At L19, F: was already
+occupied by imerge files and the other player's groups, so black's 12 cascade groups
+all fell to Y: (91 MB/s write, 68 MB/s read) instead of the faster F: (188 MB/s).
+
+**New behaviour:** cascade temp placement is decided per-group inside `CascadingMerge`
+using the same `DriveReserve` / `DriveReclaim` ledger.  A prioritized list of candidate
+dirs is passed in (`mergeDirectory[]` first, `storeMergeDirectory` last); each group
+picks the first dir with ledger space at the moment it starts.  When F: has room for
+some groups and Y: only for others, the temps spread automatically.
+
+Key effects:
+- **Phase 1 (write temps):** groups on F: write at 188 MB/s instead of 91 MB/s,
+  reducing total Phase 1 time roughly proportional to the fraction that fits on F:.
+- **Phase 2 (final k-way merge):** reads all temp files simultaneously, so temps split
+  across F: and Y: yield concurrent I/O (~188 + 68 = 256 MB/s combined read) instead
+  of sequential reads from a single slower drive.
+- **No upfront all-or-nothing reservation:** the ledger pressure on both drives is
+  spread in time, which may allow more groups on F: than the upfront check would have
+  allowed.
+
+`CascadingMerge` signature change: `const char* workDir` replaced by
+`const char** tempDirs, int numTempDirs`.  Temp-file reclaim now uses
+`tempPaths[i][0]` (drive letter from the actual path) instead of a single
+`workDir[0]`, correctly handling temps on different drives.
+
+Each group's drive allocation is logged:
+```
+CascadingMerge: black group 1/12 -> F: (312.45 GB input)
+CascadingMerge: black group 7/12 -> Y: (298.12 GB input)
+```
+
+---
+
 ## [0.2.12] - 2026-06-21
 
 ### Fix history table column overflow at L19+ (`StatsListener.cpp`)

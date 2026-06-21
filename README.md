@@ -52,8 +52,10 @@ Store drive (Y:)
   has no room.
 - **End-of-level merge** — two threads run concurrently (one per player), each performing
   a `CascadingMerge` over all remaining writer files and intermediate files.  If per-player
-  file count exceeds 256, a two-phase cascade is used: intermediate temps on F: (or Y:
-  fallback), then a final k-way pass to the store file on Y:.
+  file count exceeds 256, a two-phase cascade is used: each group's temp is placed on the
+  first drive with ledger space (F: preferred, Y: as fallback), so temps spread across drives
+  rather than all going to one.  This lets Phase 2 read temps concurrently from both drives
+  (~188 + 68 = 256 MB/s) instead of sequentially from the slower one.
 - **Drive space ledger** — all space decisions (intermediate merge destination, cascade temp
   drive, final output) use an atomic per-drive ledger (`driveLedger[26]` in
   `OthelloLevelBlasterState`) rather than live OS queries.  The ledger is seeded from the
