@@ -5,6 +5,7 @@
 #include "LevelSolverThread.h"
 #include "MergeFiles.h"
 #include "StatsListener.h"
+#include "BlasterFileName.h"
 #include <windows.h>
 #include <ctype.h>
 
@@ -109,6 +110,18 @@ static void ParseArgs(int argc, char* argv[])
 
 #undef REQUIRE_NEXT
     }
+}
+
+static void WriteSentinelStats(const char* path, const LevelStats* ls)
+{
+    HANDLE h = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    uint64_t magic = SENTINEL_STATS_MAGIC;
+    DWORD nw;
+    WriteFile(h, &magic, (DWORD)sizeof(magic), &nw, NULL);
+    WriteFile(h, ls,     (DWORD)sizeof(*ls),   &nw, NULL);
+    CloseHandle(h);
 }
 
 static BOOL WINAPI CtrlHandler(DWORD dwCtrlType)
@@ -246,6 +259,14 @@ int main(int argc, char* argv[])
 
     PrintLevelStatsHeader();
 
+    // Print restored history for levels already completed before this run.
+    // Stats are loaded from the _complete sentinel files by ScanForResumeLevel.
+    // Levels whose sentinels were zero-byte (legacy / manual) have totalNanos==0
+    // and are silently skipped.
+    for (int lvl = 0; lvl < startLevel; lvl++)
+        if (g_state.levelStats[lvl].totalNanos > 0)
+            LogLevelSummary(lvl, &ctx);
+
     for (int level = startLevel; level < maxLevel && !g_state.terminateThreads; level++)
     {
         g_state.playLevel = (uint8_t)level;
@@ -320,6 +341,21 @@ int main(int argc, char* argv[])
             g_state.levelStats[level].numDriveSnapshot = g_state.numWriterDrives;
             for (int i = 0; i < g_state.numWriterDrives; i++)
                 g_state.levelStats[level].driveSnapshot[i] = g_state.writerDriveStats[i];
+
+            SYSTEMTIME _st = {};
+            GetLocalTime(&_st);
+            snprintf(g_state.levelStats[level].completedAt,
+                     sizeof(g_state.levelStats[level].completedAt),
+                     "%04d-%02d-%02d %02d:%02d:%02d",
+                     _st.wYear, _st.wMonth, _st.wDay,
+                     _st.wHour, _st.wMinute, _st.wSecond);
+
+            // Write _complete sentinel with full stats payload so a future restart
+            // can restore the history table without re-solving completed levels.
+            char sentComplete[MAX_FULL_PATH_NAME];
+            SentinelNameComplete(sentComplete, sizeof(sentComplete),
+                                 g_state.storeDirectory, level + 1);
+            WriteSentinelStats(sentComplete, &g_state.levelStats[level]);
         }
         else
         {
@@ -328,14 +364,6 @@ int main(int argc, char* argv[])
         }
 
         g_state.currentPhase = nullptr;
-
-        SYSTEMTIME _st = {};
-        GetLocalTime(&_st);
-        snprintf(g_state.levelStats[level].completedAt,
-                 sizeof(g_state.levelStats[level].completedAt),
-                 "%04d-%02d-%02d %02d:%02d:%02d",
-                 _st.wYear, _st.wMonth, _st.wDay,
-                 _st.wHour, _st.wMinute, _st.wSecond);
 
         LogLevelSummary(level, &ctx);
     }

@@ -184,9 +184,10 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                   "Lvl        BoardsIn        Generated         GpuDups         MrgDups         Written       SlvGB  Duration      ns/brd\n");
     n += snprintf(buf + n, bufSize - n,
                   "---  --------------  ---------------  --------------  --------------  --------------  ----------  --------  ----------\n");
-    for (int lvl = pSt->resumeLevel; lvl < curLevel; lvl++)
+    for (int lvl = 0; lvl < curLevel; lvl++)
     {
         const LevelStats* ls = &pSt->levelStats[lvl];
+        if (ls->totalNanos == 0) continue;  // no stats (legacy sentinel or not yet run)
         FormatDuration(ls->totalNanos, dur, sizeof(dur));
         uint64_t ns = (ls->boardsReadFromStore > 0)
                       ? (uint64_t)(ls->totalNanos / (int64_t)ls->boardsReadFromStore) : 0;

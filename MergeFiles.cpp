@@ -1065,9 +1065,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
     // interrupted while either player merge is running, this file will remain
     // on disk and the resume scan will know the level's output is incomplete.
     char sentMerging[MAX_FULL_PATH_NAME];
-    char sentComplete[MAX_FULL_PATH_NAME];
-    SentinelNameMerging(sentMerging,  sizeof(sentMerging),  pSt->storeDirectory, level + 1);
-    SentinelNameComplete(sentComplete, sizeof(sentComplete), pSt->storeDirectory, level + 1);
+    SentinelNameMerging(sentMerging, sizeof(sentMerging), pSt->storeDirectory, level + 1);
     {
         HANDLE hs = CreateFileA(sentMerging, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
                                 FILE_ATTRIBUTE_NORMAL, NULL);
@@ -1079,16 +1077,13 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
     blackThread.join();
     whiteThread.join();
 
-    // Promote "merging" → "complete" only when both threads finished cleanly.
-    // If terminateThreads is set the output may be partial; leave "merging"
-    // in place so the next startup knows to re-run the producing iteration.
+    // Delete "merging" sentinel on clean finish.  The "complete" sentinel (with
+    // full LevelStats payload) is written by the main loop after all stats fields
+    // are populated; that way the persisted stats include totalNanos, driveSnapshot,
+    // storeFreeBytes, and completedAt which are only known after this function returns.
+    // If terminateThreads is set, leave "merging" in place so resume scan re-runs.
     if (!pSt->terminateThreads)
-    {
-        HANDLE hs = CreateFileA(sentComplete, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, NULL);
-        if (hs != INVALID_HANDLE_VALUE) CloseHandle(hs);
         DeleteFileA(sentMerging);
-    }
 
     // ── Finalize stats ────────────────────────────────────────────────────────
     uint64_t blackUnique = data[BLF_PLAYER_BLACK].unique;

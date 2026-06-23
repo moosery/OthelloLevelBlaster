@@ -247,11 +247,31 @@ static void deletePlayerOutputFile(const char* storeDir, int level, const char* 
     }
 }
 
+// Read LevelStats from a _complete sentinel file.  Returns false if the file is
+// zero-byte (legacy / manually created) or does not contain valid stats data.
+static bool ReadSentinelStats(const char* path, LevelStats* out)
+{
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                           OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    uint64_t magic = 0;
+    DWORD    nr    = 0;
+    bool ok = ReadFile(h, &magic, (DWORD)sizeof(magic), &nr, NULL)
+              && nr == sizeof(magic)
+              && magic == SENTINEL_STATS_MAGIC
+              && ReadFile(h, out, (DWORD)sizeof(*out), &nr, NULL)
+              && nr == sizeof(*out);
+    CloseHandle(h);
+    return ok;
+}
+
 static int ScanForResumeLevel(POthelloLevelBlasterState pState)
 {
     // Sentinel-aware scan.  For each level:
     //
     //   _complete present            → level fully written; continue to next.
+    //                                  If sentinel contains stats payload, restore
+    //                                  levelStats[level-1] for history display.
     //   _merging present (no _complete) → DoEndOfLevelMerge was interrupted;
     //                                     delete sentinel + any player files;
     //                                     resume from this level.
@@ -264,10 +284,18 @@ static int ScanForResumeLevel(POthelloLevelBlasterState pState)
     {
         char sentPath[MAX_FULL_PATH_NAME];
 
-        // Fast path: complete sentinel → level done.
+        // Fast path: complete sentinel → level done; try to restore stats.
         SentinelNameComplete(sentPath, sizeof(sentPath), pState->storeDirectory, level);
         if (GetFileAttributesA(sentPath) != INVALID_FILE_ATTRIBUTES)
+        {
+            if (level > 0)
+            {
+                LevelStats restored = {};
+                if (ReadSentinelStats(sentPath, &restored))
+                    pState->levelStats[level - 1] = restored;
+            }
             continue;
+        }
 
         // Merging sentinel → interrupted mid-merge; purge partial output and re-run.
         SentinelNameMerging(sentPath, sizeof(sentPath), pState->storeDirectory, level);

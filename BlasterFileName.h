@@ -192,3 +192,8 @@ static inline void SentinelNameComplete(char* out, size_t outSize,
 {
     snprintf(out, outSize, "%s\\Level_%04d_complete", dir, level);
 }
+
+// Magic value embedded at the start of a _complete sentinel that contains serialized
+// LevelStats.  Zero-byte sentinel files (legacy / manually created) have no magic
+// and are treated as "level complete, stats unknown."
+#define SENTINEL_STATS_MAGIC 0x5354415453544C42ULL  // "BLTSTATS" LE

@@ -4,6 +4,40 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.24] - 2026-06-23
+
+### Persist level stats across restarts
+
+The `Level_NNNN_complete` sentinel files now carry a `LevelStats` payload
+(magic `SENTINEL_STATS_MAGIC` + raw struct) written after every level finishes.
+On restart, `ScanForResumeLevel` reads each sentinel and populates
+`levelStats[level-1]`, so the full history is available from the first query.
+
+**`BlasterFileName.h`** — `SENTINEL_STATS_MAGIC` constant (`0x5354415453544C42`).
+
+**`MergeFiles.cpp` (`DoEndOfLevelMerge`)** — removed the zero-byte `_complete`
+write from inside the merge function.  Only the `_merging` deletion remains here;
+the `_complete` sentinel (with stats) is now written by the main loop after all
+fields are set.
+
+**`OthelloLevelBlaster.cpp`** — `WriteSentinelStats` helper (magic + `LevelStats`
+struct).  `completedAt` is now set inside the `!terminateThreads` success block
+(it was always set unconditionally before, but the timestamp is meaningless for
+an interrupted level).  After `completedAt` is set the sentinel is written.  At
+startup, restored levels whose `totalNanos > 0` are printed under the stats header
+before the first new-run level row.
+
+**`InitSolver.cpp` (`ScanForResumeLevel`)** — `ReadSentinelStats` helper.  When a
+`_complete` sentinel is found, tries to deserialize stats into `levelStats[level-1]`.
+Zero-byte / legacy sentinels fail the magic check silently — history rows for those
+levels simply stay blank and are skipped.
+
+**`StatsListener.cpp`** — history table loop changed from `resumeLevel..curLevel` to
+`0..curLevel`, skipping rows where `totalNanos == 0`.  Restored levels from prior
+runs now appear above the current run's rows.
+
+---
+
 ## [0.2.23] - 2026-06-23
 
 ### Display: solve% to 3 decimal places
