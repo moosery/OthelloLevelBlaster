@@ -117,7 +117,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                           liveBlack, liveWhite);
         else
             n += snprintf(buf + n, bufSize - n,
-                          "    %c  %4d  %5llu  %6.2f GB            %7.2f GB  %3d  %3d\n",
+                          "    %c  %4d  %5llu  %6.2f GB              %7.2f GB  %3d  %3d\n",
                           d->driveLetter, d->numDirs,
                           (unsigned long long)d->levelFilesWritten,
                           d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
