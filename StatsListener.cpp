@@ -108,7 +108,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                            && d->levelBytesUncompressed != d->levelBytesWritten);
         if (showUncomp)
             n += snprintf(buf + n, bufSize - n,
-                          "   %c  %4d  %5llu  %8.2f GB  %9.2f GB  %9.2f GB  %3d  %3d\n",
+                          "   %c  %4d  %5llu  %6.2f GB  %7.2f GB  %7.2f GB  %3d  %3d\n",
                           d->driveLetter, d->numDirs,
                           (unsigned long long)d->levelFilesWritten,
                           d->levelBytesWritten      / (1024.0 * 1024.0 * 1024.0),
@@ -117,7 +117,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                           liveBlack, liveWhite);
         else
             n += snprintf(buf + n, bufSize - n,
-                          "   %c  %4d  %5llu  %8.2f GB            %9.2f GB  %3d  %3d\n",
+                          "   %c  %4d  %5llu  %6.2f GB            %7.2f GB  %3d  %3d\n",
                           d->driveLetter, d->numDirs,
                           (unsigned long long)d->levelFilesWritten,
                           d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
@@ -216,7 +216,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                 ? 100.0 * (double)pSt->mergeProgressBytes[0] / (double)pSt->mergeTotalInputBytes[0] : 0.0;
             double bPct = (pSt->mergeTotalInputBytes[1] > 0)
                 ? 100.0 * (double)pSt->mergeProgressBytes[1] / (double)pSt->mergeTotalInputBytes[1] : 0.0;
-            snprintf(phaseStr, sizeof(phaseStr), "[W:%3.0f%%/B:%3.0f%%]", wPct, bPct);
+            snprintf(phaseStr, sizeof(phaseStr), "[W:%7.3f%%/B:%7.3f%%]", wPct, bPct);
         }
         else if (pSt->currentPhase
                  && strcmp(pSt->currentPhase, "Flushing buffers") == 0)

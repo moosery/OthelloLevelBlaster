@@ -4,6 +4,23 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.21] - 2026-06-23
+
+### Display: fix drive-table GB column alignment; show merge % to 3 decimal places
+
+**`StatsListener.cpp`**
+
+- Drive table: `%8.2f` → `%6.2f` for Disk GB column (was 2 chars wider than the
+  11-char header slot); `%9.2f` → `%7.2f` for Uncomp GB and Free GB columns (each
+  2 chars wider than their 12-char header slots).  Blk/Wht columns were pushed
+  right by 6 chars total as a result.  Separators and headers were already correct.
+- Merge phase progress: `%3.0f%%` → `%7.3f%%` so `[W: 86%/B: 73%]` becomes
+  `[W: 86.000%/B: 73.000%]`.  At high levels the merge can take many hours; 3
+  decimal places give useful granularity rather than a percentage that doesn't
+  visibly change for long stretches.
+
+---
+
 ## [0.2.20] - 2026-06-23
 
 ### Add level-complete sentinels to close the interrupted-between-players gap
