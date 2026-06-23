@@ -170,3 +170,25 @@ static inline void BLFZNameCascadeTemp(char* out, size_t outSize,
     snprintf(out, outSize, "%s\\cascade_temp_L%03d_%s_%04d.blfz",
              dir, level, BLFPlayerStr(player), fileIdx);
 }
+
+// ── Level sentinel files (storeDir) ─────────────────────────────────────────
+// Zero-byte markers written to storeDir to track merge state.
+//   Level_NNNN_merging  — created at the START of DoEndOfLevelMerge
+//   Level_NNNN_complete — created when BOTH player threads finish cleanly;
+//                         merging sentinel is deleted at the same time.
+// The resume scan uses these to distinguish a complete level (has _complete)
+// from an interrupted one (has _merging but no _complete).
+// Old data produced before sentinels were added must have sentinel files
+// created manually: type nul > "Y:\...\storeDir\Level_NNNN_complete"
+
+static inline void SentinelNameMerging(char* out, size_t outSize,
+                                        const char* dir, int level)
+{
+    snprintf(out, outSize, "%s\\Level_%04d_merging", dir, level);
+}
+
+static inline void SentinelNameComplete(char* out, size_t outSize,
+                                         const char* dir, int level)
+{
+    snprintf(out, outSize, "%s\\Level_%04d_complete", dir, level);
+}

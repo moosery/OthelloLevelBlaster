@@ -4,6 +4,59 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.20] - 2026-06-23
+
+### Add level-complete sentinels to close the interrupted-between-players gap
+
+**`BlasterFileName.h`** — `SentinelNameMerging` / `SentinelNameComplete`
+
+Two zero-byte sentinel files are now written to storeDir for each level:
+
+- `Level_NNNN_merging`  — written at the START of `DoEndOfLevelMerge`, before
+  either player thread launches.
+- `Level_NNNN_complete` — written after BOTH player threads join successfully
+  (only when `terminateThreads` is false); `_merging` is deleted at the same time.
+
+This closes the gap identified in v0.2.19: at high levels the black and white
+cascade merges can differ by **hours** (e.g. black spills to Y: while white uses
+F:).  Without sentinels, restarting after one player completed but before the
+other did would look identical to a legitimately one-sided level (zero boards for
+one player).
+
+**`MergeFiles.cpp`** — `DoEndOfLevelMerge`
+
+Writes `_merging` sentinel before spawning threads; promotes to `_complete` and
+removes `_merging` after successful join.  If `terminateThreads` is set (Ctrl+C
+or fatal error), `_merging` is left in place so the next startup knows to re-run.
+
+**`CreateSeedFile.cpp`** — `CreateSeedFile`
+
+Level 0 (the seed) has no `DoEndOfLevelMerge`, so its `Level_0000_complete`
+sentinel is written here.  Idempotent: safe to call even if the seed already
+exists (always (re-)writes the sentinel so old archives pick it up on first run).
+
+**`InitSolver.cpp`** — `ScanForResumeLevel`
+
+Updated scan priority:
+1. `_complete` present → level done (fast path — no file I/O for 2 TB files).
+2. `_merging` present → interrupted mid-merge; delete sentinel + any player files;
+   re-run the producing iteration.
+3. Neither sentinel, no player files → level missing.
+4. Neither sentinel, corrupt player file → delete all; re-run.
+5. Neither sentinel, valid player file(s) → backwards-compat for old archives
+   produced before this version.
+
+**Backwards compatibility:** old data (e.g. L0–L20 in the existing archive) has
+no sentinels.  Add them manually:
+```
+type nul > "Y:\OthelloLevelBlaster\Store\storeDir\Level_0000_complete"
+type nul > "Y:\OthelloLevelBlaster\Store\storeDir\Level_0001_complete"
+... (repeat for each level)
+```
+Level_0000_complete is written automatically by CreateSeedFile on first startup.
+
+---
+
 ## [0.2.19] - 2026-06-23
 
 ### Fix resume scan: correctly handle corrupt, one-sided, and timing-interrupted levels

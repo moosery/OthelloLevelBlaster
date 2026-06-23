@@ -1061,10 +1061,34 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         MemFree(pd.inputSizes);
     };
 
+    // Write "merging" sentinel before launching threads.  If the process is
+    // interrupted while either player merge is running, this file will remain
+    // on disk and the resume scan will know the level's output is incomplete.
+    char sentMerging[MAX_FULL_PATH_NAME];
+    char sentComplete[MAX_FULL_PATH_NAME];
+    SentinelNameMerging(sentMerging,  sizeof(sentMerging),  pSt->storeDirectory, level + 1);
+    SentinelNameComplete(sentComplete, sizeof(sentComplete), pSt->storeDirectory, level + 1);
+    {
+        HANDLE hs = CreateFileA(sentMerging, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hs != INVALID_HANDLE_VALUE) CloseHandle(hs);
+    }
+
     std::thread blackThread([&] { mergePlayer(BLF_PLAYER_BLACK); });
     std::thread whiteThread([&] { mergePlayer(BLF_PLAYER_WHITE); });
     blackThread.join();
     whiteThread.join();
+
+    // Promote "merging" → "complete" only when both threads finished cleanly.
+    // If terminateThreads is set the output may be partial; leave "merging"
+    // in place so the next startup knows to re-run the producing iteration.
+    if (!pSt->terminateThreads)
+    {
+        HANDLE hs = CreateFileA(sentComplete, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hs != INVALID_HANDLE_VALUE) CloseHandle(hs);
+        DeleteFileA(sentMerging);
+    }
 
     // ── Finalize stats ────────────────────────────────────────────────────────
     uint64_t blackUnique = data[BLF_PLAYER_BLACK].unique;

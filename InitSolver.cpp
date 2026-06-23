@@ -225,22 +225,62 @@ static LevelFileStatus checkLevelFile(const char* storeDir, int level, const cha
     return LFS_ABSENT;
 }
 
+// Find and delete a player output file for a level without validating it.
+// Used after finding a "merging" sentinel when we want to purge partial output.
+static void deletePlayerOutputFile(const char* storeDir, int level, const char* player)
+{
+    static const char* exts[] = { "blf", "blfz" };
+    for (int e = 0; e < 2; e++)
+    {
+        char pattern[MAX_FULL_PATH_NAME];
+        snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_%s_0000.%s",
+                 storeDir, level, player, exts[e]);
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        FindClose(h);
+        char fullPath[MAX_FULL_PATH_NAME];
+        snprintf(fullPath, sizeof(fullPath), "%s\\%s", storeDir, fd.cFileName);
+        LoggerLog("  Deleting partial output '%s'\n", fullPath);
+        DeleteFileA(fullPath);
+        break;
+    }
+}
+
 static int ScanForResumeLevel(POthelloLevelBlasterState pState)
 {
-    // Check both players independently for each level.
-    // Rules:
-    //   - Both absent               → level missing; resume from here.
-    //   - Either corrupt            → delete both (valid and corrupt); resume from here
-    //                                 so the producing iteration rewrites all output.
-    //   - One valid, other absent   → treat as legitimately one-sided (that player had
-    //                                 zero boards); level is complete.
-    //   - Both valid                → level complete.
+    // Sentinel-aware scan.  For each level:
     //
-    // Undetectable edge case: Ctrl+C between two concurrent merge-thread completions
-    // (one player's file fully written, other not yet started and thus absent).
-    // Without a sentinel file we cannot distinguish this from a genuine one-sided level.
+    //   _complete present            → level fully written; continue to next.
+    //   _merging present (no _complete) → DoEndOfLevelMerge was interrupted;
+    //                                     delete sentinel + any player files;
+    //                                     resume from this level.
+    //   Neither sentinel, no player files → level is missing; resume from here.
+    //   Neither sentinel, corrupt file    → delete all for this level; re-run.
+    //   Neither sentinel, valid file(s)   → backwards-compat: treat as complete.
+    //                                       (Old data without sentinels — add
+    //                                       manually: type nul > Level_NNNN_complete)
     for (int level = 0; level < MAX_LEVELS; level++)
     {
+        char sentPath[MAX_FULL_PATH_NAME];
+
+        // Fast path: complete sentinel → level done.
+        SentinelNameComplete(sentPath, sizeof(sentPath), pState->storeDirectory, level);
+        if (GetFileAttributesA(sentPath) != INVALID_FILE_ATTRIBUTES)
+            continue;
+
+        // Merging sentinel → interrupted mid-merge; purge partial output and re-run.
+        SentinelNameMerging(sentPath, sizeof(sentPath), pState->storeDirectory, level);
+        if (GetFileAttributesA(sentPath) != INVALID_FILE_ATTRIBUTES)
+        {
+            LoggerLog("ScanForResumeLevel: level %d merge was interrupted; purging partial output\n", level);
+            DeleteFileA(sentPath);
+            deletePlayerOutputFile(pState->storeDirectory, level, "black");
+            deletePlayerOutputFile(pState->storeDirectory, level, "white");
+            return level;
+        }
+
+        // No sentinels: check for player files.
         char blackPath[MAX_FULL_PATH_NAME] = {};
         char whitePath[MAX_FULL_PATH_NAME] = {};
         LevelFileStatus bs = checkLevelFile(pState->storeDirectory, level, "black",
@@ -253,22 +293,12 @@ static int ScanForResumeLevel(POthelloLevelBlasterState pState)
 
         if (bs == LFS_CORRUPT || ws == LFS_CORRUPT)
         {
-            // Delete whichever file is still valid so the producing iteration
-            // regenerates both from scratch.
-            if (bs == LFS_VALID)
-            {
-                LoggerLog("ScanForResumeLevel: deleting valid level %d black alongside corrupt white\n", level);
-                DeleteFileA(blackPath);
-            }
-            if (ws == LFS_VALID)
-            {
-                LoggerLog("ScanForResumeLevel: deleting valid level %d white alongside corrupt black\n", level);
-                DeleteFileA(whitePath);
-            }
+            if (bs == LFS_VALID) { LoggerLog("  Deleting valid level %d black alongside corrupt white\n", level); DeleteFileA(blackPath); }
+            if (ws == LFS_VALID) { LoggerLog("  Deleting valid level %d white alongside corrupt black\n", level); DeleteFileA(whitePath); }
             return level;
         }
 
-        // LFS_VALID or LFS_ABSENT for each player — level complete.
+        // Valid file(s), no sentinel — old pre-sentinel data; treat as complete.
     }
     return MAX_LEVELS;
 }
