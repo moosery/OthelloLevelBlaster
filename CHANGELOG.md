@@ -4,6 +4,79 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.15] - 2026-06-22
+
+### Cross-drive intermediate merge with file-count trigger and total-flush fallback
+
+#### Problem
+
+The old intermediate merge (`DoIntermediateMerge`) was per-drive: thread 0 only
+saw D: files, thread 1 only saw E: files.  Cross-drive duplicates were never
+removed until the end-of-level cascade.  The trigger was space-based (fires when
+a single drive drops below 20 GB free), which fires late and unpredictably.
+
+#### Changes
+
+**`OthelloTypes.h`**
+- VERSION → 0.2.15
+- `MAX_MERGE_FANIN` raised from 256 → **3500** (max open files for a single-color
+  k-way merge; _setmaxstdio raised to 4000 accordingly)
+- Added `mwBlackFilesConsumed[MAX_WRITERS]` / `mwWhiteFilesConsumed[MAX_WRITERS]`:
+  monotonic consumed-pointer so the cross-drive merge knows which files are already
+  merged and which are still unconsumed.
+- Added `CRITICAL_SECTION imergeCS`: serializes concurrent cross-drive merges so
+  only one MW thread runs a merge at a time.
+
+**`InitSolver.cpp`**
+- `_setmaxstdio(4000)` (was 2048)
+- `InitializeCriticalSection(&pState->imergeCS)` on startup
+- `DeleteCriticalSection(&pState->imergeCS)` on shutdown
+- `mwBlackFilesConsumed[i]` / `mwWhiteFilesConsumed[i]` zeroed at init
+
+**`OthelloLevelBlaster.cpp`**
+- Per-level reset zeroes the consumed counters alongside the file counts
+
+**`MergeFiles.cpp`** — replaces `DoIntermediateMerge` with `DoCrossDriveIntermediateMerge`
+
+*Count increment moved to after-close*: `mwBlackFileCount[ti]` is now incremented
+only after `BLFWriterClose`, so at any moment the count equals the number of fully
+written and closed files.  This lets the cross-drive merge snapshot the counts and
+safely enumerate files by explicit index without risking a race with the other
+thread's in-progress write.
+
+*New trigger in `FlushMergeWriterBuffer`*:
+- **Primary (file-count)**: fires when total unconsumed files per color across all
+  NVMe drives ≥ MAX_MERGE_FANIN (3500).
+- **Secondary (space)**: fires when a drive's free space drops below its 20 GB
+  threshold — safety net for levels where individual files are very large.
+
+*`DoCrossDriveIntermediateMerge`*:
+1. `TryEnterCriticalSection` — if another thread is already merging, returns
+   immediately (that merge covers all drives anyway).
+2. Re-checks counts under the lock; returns if the other thread already cleared
+   the backlog.
+3. Snapshots `mwBlackFileCount[i]` / `mwWhiteFileCount[i]` for all writers.
+   Files in `[consumed..snap)` are guaranteed complete by the after-close rule.
+4. For each player (white then black):
+   - Gathers unconsumed writer files from every MW directory by explicit index.
+   - **Normal path**: tries to `DriveReserve` the merged output on F:.  If it
+     fits, k-way merges all files → single `imerge_L*_player_NNNN.blfz` on F:.
+   - **Total-flush path** (F: full): also gathers all existing F: imerge files
+     for this level and player, then merges the combined set → Y: in one shot,
+     clearing both the NVMe drives and F: completely.  Resets F: imerge file
+     counters so future normal-path merges can use F: again.
+5. Advances consumed pointers past all merged files.
+
+#### Effect
+
+- Cross-drive duplicates (≈ half of all merge dups) are now removed during the
+  solve, not deferred to the end-of-level cascade.
+- The merge fires at a predictable file-count threshold rather than silently late.
+- When F: fills, a single large merge clears all fast drives at once instead of
+  accumulating scattered imerge files on Y:.
+
+---
+
 ## [0.2.14] - 2026-06-21
 
 ### Dynamic cascade group sizing — fill F: fully before spilling to Y: (`MergeFiles.cpp`)

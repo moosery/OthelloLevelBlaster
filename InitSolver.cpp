@@ -154,12 +154,14 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     // Segment tracking is implicitly zero-initialized via g_state = {}; verify explicitly.
     for (int i = 0; i < (int)pState->numMergeWriters; i++)
     {
-        pState->mwBlackSegCount[i]   = 0;
-        pState->mwBlackBoardsUsed[i] = 0;
-        pState->mwWhiteSegCount[i]   = 0;
-        pState->mwWhiteBoardsUsed[i] = 0;
-        pState->mwBlackFileCount[i]  = 0;
-        pState->mwWhiteFileCount[i]  = 0;
+        pState->mwBlackSegCount[i]      = 0;
+        pState->mwBlackBoardsUsed[i]    = 0;
+        pState->mwWhiteSegCount[i]      = 0;
+        pState->mwWhiteBoardsUsed[i]    = 0;
+        pState->mwBlackFileCount[i]     = 0;
+        pState->mwWhiteFileCount[i]     = 0;
+        pState->mwBlackFilesConsumed[i] = 0;
+        pState->mwWhiteFilesConsumed[i] = 0;
     }
 
     double totalAllocGB = (pState->pingPongBufferSize + pState->storeBufferSize
@@ -293,7 +295,7 @@ static void createDirectories(POthelloLevelBlasterState pState)
 void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pState,
                 PMachineInfo pMachineInfo)
 {
-    _setmaxstdio(2048);   // k-way merge opens up to MAX_MERGE_FANIN files simultaneously
+    _setmaxstdio(4000);   // k-way merge opens up to MAX_MERGE_FANIN files simultaneously
     SetBoardSizeForRun(pConfig->boardSize);
 
     for (const char* p = pConfig->useDrives; *p; p++)
@@ -325,6 +327,8 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
     int numStoreThreads     = 1;
     int numGPUFeederThreads = 1;
     int numStatsThreads     = 1;
+
+    InitializeCriticalSection(&pState->imergeCS);
 
     pState->pMergeWriterPool = new ThreadPool(numMWThreads, "MergeWriterPool");
     if (!pState->pMergeWriterPool)
@@ -397,4 +401,5 @@ void CleanupSolver(POthelloLevelBlasterState pState)
         MemFree(pState->pMWBuffer[i]);
     MemFree(pState->pStoreBuffer);
     MemFree(pState->pPingPongBuffer);
+    DeleteCriticalSection(&pState->imergeCS);
 }

@@ -8,11 +8,6 @@
 // FlushAllMergeWriterBuffers at end of level.
 void FlushMergeWriterBuffer(int thdIdx, PSolveContext pCtx);
 
-// Called when free space on the NVMe for mwIdx drops below its threshold.
-// Merges all writer files on that NVMe to the first mergeDirectory with
-// sufficient free space; cascades when file count exceeds MAX_MERGE_FANIN.
-void DoIntermediateMerge(int mwIdx, PSolveContext pCtx);
-
 // Called from the main level loop after all merge-writer buffers have been
 // flushed.  Consolidates every remaining writer file (NVMe) and intermediate
 // merge file (HDD) into a single sorted, deduped store file on the store drive.

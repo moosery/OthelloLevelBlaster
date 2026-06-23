@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.14"
+#define VERSION           "0.2.15"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
@@ -12,9 +12,13 @@
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
 #define MAX_MW_SEGS       8     // max GPU flush segments per merge-writer buffer
 
-// Max simultaneous input files in a single k-way merge pass.
-// 256 covers a full NVMe at worst case (3.63 TB / 16 GB flush = ~226 files).
-#define MAX_MERGE_FANIN 256
+// Maximum number of files opened simultaneously for a single-color k-way merge.
+// The cross-drive intermediate merge fires when total unconsumed writer files
+// across all NVMe drives (per color) reaches this limit.  At L19 (~0.55 GB/file
+// compressed) 3500 files ≈ 1.9 TB before the trigger; the space threshold
+// (DRIVE_SPACE_LOW_BYTES) acts as a safety net when individual files are larger.
+// _setmaxstdio must be > MAX_MERGE_FANIN + overhead; see InitSolver.cpp.
+#define MAX_MERGE_FANIN 3500
 
 // Drive space threshold — when free bytes on a drive drops below
 // DRIVE_SPACE_LOW_BYTES * numDirsOnDrive, trigger a merge-to-store flush.
@@ -107,8 +111,10 @@ typedef struct __OthelloLevelBlasterState
     char    mwDirectory[MAX_WRITERS][MAX_FULL_PATH_NAME];
     size_t  mwBufferSize;                           // bytes per merge-writer buffer
     void*   pMWBuffer[MAX_WRITERS];                 // one large buffer per thread
-    int     mwBlackFileCount[MAX_WRITERS];           // next black-turn output file number (reset each level)
-    int     mwWhiteFileCount[MAX_WRITERS];           // next white-turn output file number (reset each level)
+    int     mwBlackFileCount[MAX_WRITERS];     // completed black writer files (incremented after close)
+    int     mwWhiteFileCount[MAX_WRITERS];     // completed white writer files (incremented after close)
+    int     mwBlackFilesConsumed[MAX_WRITERS]; // files already merged by DoCrossDriveIntermediateMerge
+    int     mwWhiteFilesConsumed[MAX_WRITERS]; // files already merged by DoCrossDriveIntermediateMerge
     size_t  gpuAccumCapacity;                       // GPU accumulator board capacity (for HasRoom check)
 
     // Per-thread two-stack segment tracking — black grows from top, white from bottom.
@@ -133,6 +139,10 @@ typedef struct __OthelloLevelBlasterState
     // A 20 GB safety buffer is subtracted at init so reservations never reach the last
     // bytes on a drive.  Replaces all ad-hoc GetDiskFreeSpaceExA calls at decision points.
     volatile int64_t driveLedger[26];
+
+    // Serializes DoCrossDriveIntermediateMerge so only one thread runs it at a time.
+    // Initialized in InitSolver; destroyed in CleanupSolver.
+    CRITICAL_SECTION imergeCS;
 
     // Per-writer intermediate merge progress (written by MW threads, read by stats thread).
     // imergeActive[i] is set to 1 before the merge and 0 after; the other fields are

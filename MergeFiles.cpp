@@ -336,6 +336,9 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
     return unique;
 }
 
+// Forward declaration (defined after FlushMergeWriterBuffer)
+static void DoCrossDriveIntermediateMerge(PSolveContext pCtx);
+
 // ============================================================================
 // FlushMergeWriterBuffer
 //
@@ -366,13 +369,17 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     // --- Black stream: merge sorted runs from the top of the buffer ---
     if (hasBlack)
     {
+        // Use the current count as the file index; increment AFTER close so that
+        // at any moment mwBlackFileCount[ti] == number of fully-written files on disk.
+        // DoCrossDriveIntermediateMerge relies on this guarantee for safe enumeration.
+        int blackFileIdx = pSt->mwBlackFileCount[ti];
         char blackPath[MAX_FULL_PATH_NAME];
         if (compressMW)
             BLFZNameWriterFile(blackPath, sizeof(blackPath), pSt->mwDirectory[ti],
-                               BLF_PLAYER_BLACK, pSt->mwBlackFileCount[ti]++);
+                               BLF_PLAYER_BLACK, blackFileIdx);
         else
             BLFNameWriterFile(blackPath, sizeof(blackPath), pSt->mwDirectory[ti],
-                              BLF_PLAYER_BLACK, pSt->mwBlackFileCount[ti]++);
+                              BLF_PLAYER_BLACK, blackFileIdx);
         BLFWriter* pw = compressMW ? BLFWriterOpenZ(blackPath) : BLFWriterOpen(blackPath);
 
         std::priority_queue<InMemDiskHead, std::vector<InMemDiskHead>, InMemDiskHeadGreater> heap;
@@ -396,20 +403,21 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
 
         uint64_t blackFileBytes = 0;
         blackCount = BLFWriterClose(pw, &blackFileBytes);
-        if (blackCount == 0) { DeleteFileA(blackPath); pSt->mwBlackFileCount[ti]--; }
-        else { fileBytes += blackFileBytes; filesCreated++; }
+        if (blackCount == 0) { DeleteFileA(blackPath); }
+        else { pSt->mwBlackFileCount[ti]++; fileBytes += blackFileBytes; filesCreated++; }
     }
 
     // --- White stream: merge sorted runs from the bottom of the buffer ---
     if (hasWhite)
     {
+        int whiteFileIdx = pSt->mwWhiteFileCount[ti];
         char whitePath[MAX_FULL_PATH_NAME];
         if (compressMW)
             BLFZNameWriterFile(whitePath, sizeof(whitePath), pSt->mwDirectory[ti],
-                               BLF_PLAYER_WHITE, pSt->mwWhiteFileCount[ti]++);
+                               BLF_PLAYER_WHITE, whiteFileIdx);
         else
             BLFNameWriterFile(whitePath, sizeof(whitePath), pSt->mwDirectory[ti],
-                              BLF_PLAYER_WHITE, pSt->mwWhiteFileCount[ti]++);
+                              BLF_PLAYER_WHITE, whiteFileIdx);
         BLFWriter* pw = compressMW ? BLFWriterOpenZ(whitePath) : BLFWriterOpen(whitePath);
 
         std::priority_queue<InMemDiskHead, std::vector<InMemDiskHead>, InMemDiskHeadGreater> heap;
@@ -433,8 +441,8 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
 
         uint64_t whiteFileBytes = 0;
         whiteCount = BLFWriterClose(pw, &whiteFileBytes);
-        if (whiteCount == 0) { DeleteFileA(whitePath); pSt->mwWhiteFileCount[ti]--; }
-        else { fileBytes += whiteFileBytes; filesCreated++; }
+        if (whiteCount == 0) { DeleteFileA(whitePath); }
+        else { pSt->mwWhiteFileCount[ti]++; fileBytes += whiteFileBytes; filesCreated++; }
     }
 
     // Reset segment tracking for this thread
@@ -451,155 +459,256 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     pSt->levelStats[level].mwFilesCreated      += filesCreated;
     pSt->levelStats[level].mwBytes             += fileBytes;
 
-    // Debit the NVMe ledger for bytes just written, then check threshold.
+    // Debit the NVMe ledger for bytes just written, then check merge triggers.
     char driveLetter = pSt->mwDirectory[ti][0];
     DriveDebit(pSt, driveLetter, (int64_t)fileBytes);
 
+    bool needsMerge = false;
     for (int i = 0; i < pSt->numWriterDrives; i++)
     {
         if (pSt->writerDriveStats[i].driveLetter == driveLetter)
         {
-            pSt->writerDriveStats[i].levelFilesWritten    += filesCreated;
-            pSt->writerDriveStats[i].levelBytesWritten    += fileBytes;
+            pSt->writerDriveStats[i].levelFilesWritten      += filesCreated;
+            pSt->writerDriveStats[i].levelBytesWritten      += fileBytes;
             pSt->writerDriveStats[i].levelBytesUncompressed += uncompressedBytes;
             if (DriveAvailable(pSt, driveLetter) < (int64_t)pSt->writerDriveStats[i].threshold)
-                DoIntermediateMerge(ti, pCtx);
+                needsMerge = true;
             break;
         }
     }
+    if (!needsMerge)
+    {
+        // File-count trigger: merge when total unconsumed files per color >= MAX_MERGE_FANIN.
+        int totalBlack = 0, totalWhite = 0;
+        for (int i = 0; i < pSt->numMergeWriters; i++)
+        {
+            totalBlack += pSt->mwBlackFileCount[i] - pSt->mwBlackFilesConsumed[i];
+            totalWhite += pSt->mwWhiteFileCount[i] - pSt->mwWhiteFilesConsumed[i];
+        }
+        if (totalBlack >= MAX_MERGE_FANIN || totalWhite >= MAX_MERGE_FANIN)
+            needsMerge = true;
+    }
+    if (needsMerge)
+        DoCrossDriveIntermediateMerge(pCtx);
 }
 
 // ============================================================================
-// DoIntermediateMerge
+// DoCrossDriveIntermediateMerge
 //
-// Runs two separate passes (black then white) over the files in the MW
-// directory.  Each pass k-way merges up to MAX_MERGE_FANIN files at a time
-// into player-specific output files on the merge (medium) drive.
+// Triggered when total unconsumed writer files across ALL NVMe drives (per
+// color) reaches MAX_MERGE_FANIN, or when a single drive's free space drops
+// below its threshold.
+//
+// Merges all unconsumed writer files from every MW directory for each player
+// (black then white) into a single imerge file on F:.  If F: cannot hold the
+// output, performs a TOTAL FLUSH: also pulls in all existing F: imerge files
+// for this level and player, merging the combined set to Y: — clearing both
+// the NVMe drives and F: in one shot so all fast drives are free again.
+//
+// Uses TryEnterCriticalSection so the second MW thread skips gracefully when
+// the first is already running a merge.  File counts are snapshotted under
+// the lock; because counts are incremented AFTER close, all files with index
+// < snapshot[i] are guaranteed complete and safe to read/delete.
 // ============================================================================
 
-void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
+static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
 {
-    POthelloLevelBlasterState pSt       = pCtx->pState;
-    const char*               mwDir     = pSt->mwDirectory[mwIdx];
-    int                       level     = (int)pSt->playLevel;
-    bool                      compressMW = (pCtx->pConfig->compressMode == COMPRESS_ALL);
+    POthelloLevelBlasterState pSt      = pCtx->pState;
+    int                       level    = (int)pSt->playLevel;
+    bool                      compress = (pCtx->pConfig->compressMode == COMPRESS_ALL);
 
-    const int kMaxInputFiles = MAX_MERGE_FANIN * MAX_MERGE_FANIN;
+    if (!TryEnterCriticalSection(&pSt->imergeCS))
+        return;  // another MW thread is already handling this
 
-    // Accumulate total input bytes across both players for progress tracking
-    uint64_t totalInputBytes = 0;
+    // Re-check under the lock: counts may have dropped since the caller checked.
+    {
+        int bk = 0, wh = 0;
+        for (int i = 0; i < pSt->numMergeWriters; i++)
+        {
+            bk += pSt->mwBlackFileCount[i] - pSt->mwBlackFilesConsumed[i];
+            wh += pSt->mwWhiteFileCount[i] - pSt->mwWhiteFilesConsumed[i];
+        }
+        bool spaceOk = true;
+        for (int i = 0; i < pSt->numMergeWriters && spaceOk; i++)
+        {
+            char dl = pSt->mwDirectory[i][0];
+            for (int j = 0; j < pSt->numWriterDrives; j++)
+            {
+                if (pSt->writerDriveStats[j].driveLetter == dl
+                    && DriveAvailable(pSt, dl) < (int64_t)pSt->writerDriveStats[j].threshold)
+                { spaceOk = false; break; }
+            }
+        }
+        if (bk < MAX_MERGE_FANIN && wh < MAX_MERGE_FANIN && spaceOk)
+        {
+            LeaveCriticalSection(&pSt->imergeCS);
+            return;
+        }
+    }
 
-    // First pass: enumerate all writer files to get the total byte count for
-    // the progress display, then process each player separately.
+    // Snapshot completed-file counts.
+    // Because counts are incremented AFTER BLFWriterClose, files [consumed..snap)
+    // are all fully written and closed — safe to enumerate and delete.
+    int snapBlack[MAX_WRITERS] = {}, snapWhite[MAX_WRITERS] = {};
+    for (int i = 0; i < pSt->numMergeWriters; i++)
+    {
+        snapBlack[i] = pSt->mwBlackFileCount[i];
+        snapWhite[i] = pSt->mwWhiteFileCount[i];
+    }
+
+    pSt->imergeActive[0]          = 1;
+    pSt->imergeTotalInputBytes[0] = 0;
+    pSt->imergeDoneInputBytes[0]  = 0;
+
+    // Upper bound: MAX_MERGE_FANIN * numWriters writer files + imerge files on F:
+    const int kMaxFiles = MAX_MERGE_FANIN * MAX_WRITERS + 1024;
+
     for (int player = BLF_PLAYER_WHITE; player <= BLF_PLAYER_BLACK; player++)
     {
-        char pattern[MAX_FULL_PATH_NAME];
-        BLFPatternWriterFiles(pattern, sizeof(pattern), mwDir, player);
+        if (pSt->terminateThreads) break;
 
-        char**    inputPaths = (char**)MemMalloc("mergeInputPaths",
-                                                  (size_t)kMaxInputFiles * sizeof(char*));
-        uint64_t* fileSizes  = (uint64_t*)MemMalloc("mergeFileSizes",
-                                                      (size_t)kMaxInputFiles * sizeof(uint64_t));
-        if (!inputPaths || !fileSizes)
-            Fatal(FATAL_ALLOCATION_FAILED, "DoIntermediateMerge: cannot allocate arrays");
+        int* snapArr     = (player == BLF_PLAYER_BLACK) ? snapBlack               : snapWhite;
+        int* consumedArr = (player == BLF_PLAYER_BLACK) ? pSt->mwBlackFilesConsumed
+                                                        : pSt->mwWhiteFilesConsumed;
 
-        uint64_t playerBytes = 0;
-        int numFiles = EnumerateByPattern(pattern, inputPaths, kMaxInputFiles,
-                                          &playerBytes, fileSizes);
-        if (compressMW && numFiles < kMaxInputFiles)
+        // Gather unconsumed writer files [consumed..snap) from each MW directory.
+        // Explicit index enumeration keeps us away from any file the other thread
+        // may currently be writing (its index >= snap by the after-close guarantee).
+        char**   paths     = (char**)MemMalloc("xdimPaths", (size_t)kMaxFiles * sizeof(char*));
+        int64_t* sizes     = (int64_t*)MemMalloc("xdimSizes", (size_t)kMaxFiles * sizeof(int64_t));
+        if (!paths || !sizes)
+            Fatal(FATAL_ALLOCATION_FAILED, "DoCrossDriveIntermediateMerge: alloc");
+
+        int     numFiles   = 0;
+        int64_t totalBytes = 0;
+
+        for (int ti = 0; ti < pSt->numMergeWriters && numFiles < kMaxFiles; ti++)
         {
-            BLFZPatternWriterFiles(pattern, sizeof(pattern), mwDir, player);
-            uint64_t extraBytes = 0;
-            int extra = EnumerateByPattern(pattern, inputPaths + numFiles,
-                                           kMaxInputFiles - numFiles,
-                                           &extraBytes, fileSizes + numFiles);
-            numFiles     += extra;
-            playerBytes  += extraBytes;
+            for (int idx = consumedArr[ti]; idx < snapArr[ti] && numFiles < kMaxFiles; idx++)
+            {
+                char path[MAX_FULL_PATH_NAME];
+                if (compress)
+                    BLFZNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
+                else
+                    BLFNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
+
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad))
+                {
+                    // Try the other compression variant (e.g. mixed-mode run)
+                    if (compress)
+                        BLFNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
+                    else
+                        BLFZNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
+                    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad))
+                        continue;  // empty flush was deleted — skip this index
+                }
+                int64_t sz = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
+                paths[numFiles] = (char*)MemMalloc("xdimPath", strlen(path) + 1);
+                if (!paths[numFiles])
+                    Fatal(FATAL_ALLOCATION_FAILED, "DoCrossDriveIntermediateMerge: path alloc");
+                strcpy(paths[numFiles], path);
+                sizes[numFiles] = sz;
+                totalBytes += sz;
+                numFiles++;
+            }
         }
-        totalInputBytes += playerBytes;
 
         if (numFiles == 0)
         {
-            MemFree(fileSizes);
-            MemFree(inputPaths);
+            MemFree(paths);
+            MemFree(sizes);
+            for (int ti = 0; ti < pSt->numMergeWriters; ti++)
+                consumedArr[ti] = snapArr[ti];
             continue;
         }
 
-        const char* playerStr = BLFPlayerStr(player);
-        LoggerLog("IntermediateMerge: mw[%d] %c: %s -- %d files, %.2f GB\n",
-                  mwIdx, mwDir[0], playerStr, numFiles,
-                  (double)playerBytes / (1024.0 * 1024.0 * 1024.0));
+        pSt->imergeTotalInputBytes[0] += (uint64_t)totalBytes;
 
-        // Publish progress state once (on first player that has files)
-        if (pSt->imergeTotalInputBytes[mwIdx] == 0)
+        // Try to reserve space on the first merge drive (F:).
+        int  destDirIdx    = -1;
+        bool useTotalFlush = false;
+
+        for (int d = 0; d < pSt->numMergeDirs; d++)
         {
-            pSt->imergeTotalInputBytes[mwIdx] = totalInputBytes;
-            pSt->imergeDoneInputBytes[mwIdx]  = 0;
-            pSt->imergeActive[mwIdx]          = 1;
+            if (DriveReserve(pSt, pSt->mergeDirectory[d][0], totalBytes))
+            {
+                destDirIdx = d;
+                break;
+            }
         }
-        // Update total in case white already ran and we're now on black
-        pSt->imergeTotalInputBytes[mwIdx] += playerBytes;
+        if (destDirIdx < 0)
+            useTotalFlush = true;
 
-        int batchStart = 0;
-        while (batchStart < numFiles && !pSt->terminateThreads)
+        if (useTotalFlush)
         {
-            int      batchCount = (std::min)(MAX_MERGE_FANIN, numFiles - batchStart);
-            int64_t  batchBytes = 0;
-            for (int i = batchStart; i < batchStart + batchCount; i++)
-                batchBytes += (int64_t)fileSizes[i];
+            // F: is full.  Pull in all existing F: imerge files for this level+player
+            // so the combined merge catches every possible cross-drive duplicate,
+            // then flush everything to Y: to clear all fast drives at once.
+            LoggerLog("DoCrossDriveIntermediateMerge: %s F: full — total flush to %c:\n",
+                      BLFPlayerStr(player), pCtx->pConfig->storeDrive);
 
-            // Reserve dest space: try each merge dir in order, fall back to Y:.
-            int         dirIdx      = -1;
-            bool        useStoreMrg = true;
-            for (int d = 0; d < pSt->numMergeDirs; d++)
+            for (int d = 0; d < pSt->numMergeDirs && numFiles < kMaxFiles; d++)
             {
-                if (DriveReserve(pSt, pSt->mergeDirectory[d][0], batchBytes))
+                char        pat[MAX_FULL_PATH_NAME];
+                uint64_t    iBytes = 0;
+                char**      tmp    = (char**)MemMalloc("xdimTmp",
+                                        (size_t)(kMaxFiles - numFiles) * sizeof(char*));
+                uint64_t*   tmpSz  = (uint64_t*)MemMalloc("xdimTmpSz",
+                                        (size_t)(kMaxFiles - numFiles) * sizeof(uint64_t));
+                if (!tmp || !tmpSz)
+                    Fatal(FATAL_ALLOCATION_FAILED, "DoCrossDriveIntermediateMerge: imerge enum");
+
+                if (compress)
+                    BLFZPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[d], level, player);
+                else
+                    BLFPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[d], level, player);
+
+                int extra = EnumerateByPattern(pat, tmp, kMaxFiles - numFiles, &iBytes, tmpSz);
+                for (int k = 0; k < extra && numFiles < kMaxFiles; k++)
                 {
-                    dirIdx      = d;
-                    useStoreMrg = false;
-                    break;
+                    paths[numFiles] = tmp[k];               // transfer ownership
+                    sizes[numFiles] = (int64_t)tmpSz[k];
+                    totalBytes     += (int64_t)tmpSz[k];
+                    numFiles++;
                 }
+                MemFree(tmp);    // free array; elements now owned by paths[]
+                MemFree(tmpSz);
             }
-            if (useStoreMrg &&
-                !DriveReserve(pSt, pCtx->pConfig->storeDrive, batchBytes))
+
+            // Reserve Y: worst-case (pre-dedup)
+            if (!DriveReserve(pSt, pCtx->pConfig->storeDrive, totalBytes))
                 Fatal(FATAL_DRIVE_SPACE,
-                      "IntermediateMerge: no drive has %.2f GB for mw[%d] %s batch",
-                      batchBytes / (1024.0 * 1024.0 * 1024.0), mwIdx, playerStr);
+                      "DoCrossDriveIntermediateMerge: total flush %s needs %.2f GB on %c:",
+                      BLFPlayerStr(player),
+                      totalBytes / (1024.0 * 1024.0 * 1024.0),
+                      pCtx->pConfig->storeDrive);
 
-            const char* destDir    = useStoreMrg ? pSt->storeMergeDirectory
-                                                  : pSt->mergeDirectory[dirIdx];
-            char        destLetter = useStoreMrg ? pCtx->pConfig->storeDrive
-                                                 : pSt->mergeDirectory[dirIdx][0];
-
-            int fileIdx;
-            if (useStoreMrg)
-            {
-                volatile LONG* pCount = (player == BLF_PLAYER_BLACK)
-                    ? (volatile LONG*)&pSt->storeMergeBlackFileCount
-                    : (volatile LONG*)&pSt->storeMergeWhiteFileCount;
-                fileIdx = (int)InterlockedExchangeAdd(pCount, 1);
-            }
-            else
-            {
-                volatile LONG* pCount = (player == BLF_PLAYER_BLACK)
-                    ? (volatile LONG*)&pSt->mergeFileBlackCount[dirIdx]
-                    : (volatile LONG*)&pSt->mergeFileWhiteCount[dirIdx];
-                fileIdx = (int)InterlockedExchangeAdd(pCount, 1);
-            }
+            volatile LONG* pCount = (player == BLF_PLAYER_BLACK)
+                ? (volatile LONG*)&pSt->storeMergeBlackFileCount
+                : (volatile LONG*)&pSt->storeMergeWhiteFileCount;
+            int fileIdx = (int)InterlockedExchangeAdd(pCount, 1);
 
             char outPath[MAX_FULL_PATH_NAME];
-            if (compressMW)
-                BLFZNameImergeFile(outPath, sizeof(outPath), destDir, level, player, fileIdx);
+            if (compress)
+                BLFZNameImergeFile(outPath, sizeof(outPath), pSt->storeMergeDirectory,
+                                   level, player, fileIdx);
             else
-                BLFNameImergeFile(outPath, sizeof(outPath), destDir, level, player, fileIdx);
+                BLFNameImergeFile(outPath, sizeof(outPath), pSt->storeMergeDirectory,
+                                  level, player, fileIdx);
 
-            uint64_t unique = KWayMergeFiles(inputPaths + batchStart, batchCount, outPath,
-                                              nullptr, compressMW, &pSt->terminateThreads);
-            int64_t actual;
-            if (compressMW)
+            LoggerLog("DoCrossDriveIntermediateMerge: total flush %s -> '%s' (%d files, %.2f GB)\n",
+                      BLFPlayerStr(player), outPath, numFiles,
+                      totalBytes / (1024.0 * 1024.0 * 1024.0));
+
+            uint64_t unique = KWayMergeFiles(paths, numFiles, outPath,
+                                              nullptr, compress, &pSt->terminateThreads);
+
+            // Reclaim Y: overestimate
+            int64_t actual = 0;
+            if (compress)
             {
                 WIN32_FILE_ATTRIBUTE_DATA fad = {};
-                actual = (int64_t)sizeof(BlasterFileTrailer);
                 if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
                     actual = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
             }
@@ -607,32 +716,85 @@ void DoIntermediateMerge(int mwIdx, PSolveContext pCtx)
             {
                 actual = (int64_t)(unique * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer));
             }
-            DriveReclaim(pSt, destLetter, batchBytes - actual);
+            DriveReclaim(pSt, pCtx->pConfig->storeDrive, totalBytes - actual);
 
-            LoggerLog("IntermediateMerge: [%d..%d] %s -> '%s'  (%llu unique boards)\n",
-                      batchStart, batchStart + batchCount - 1, playerStr, outPath, unique);
-
-            for (int i = batchStart; i < batchStart + batchCount; i++)
+            // Delete all inputs and reclaim their drive space
+            for (int fi = 0; fi < numFiles; fi++)
             {
-                DriveReclaim(pSt, inputPaths[i][0], (int64_t)fileSizes[i]);
-                DeleteFileA(inputPaths[i]);
-                MemFree(inputPaths[i]);
+                DriveReclaim(pSt, paths[fi][0], sizes[fi]);
+                DeleteFileA(paths[fi]);
+                MemFree(paths[fi]);
             }
 
-            pSt->imergeDoneInputBytes[mwIdx] += (uint64_t)batchBytes;
-            batchStart += batchCount;
+            // Clear F: imerge file counters for this player — all F: files were consumed
+            for (int d = 0; d < pSt->numMergeDirs; d++)
+            {
+                if (player == BLF_PLAYER_BLACK) pSt->mergeFileBlackCount[d] = 0;
+                else                            pSt->mergeFileWhiteCount[d] = 0;
+            }
+
+            LoggerLog("DoCrossDriveIntermediateMerge: total flush %s done (%llu unique)\n",
+                      BLFPlayerStr(player), unique);
+        }
+        else
+        {
+            // Normal path: merge writer files from D:+E: -> single imerge on F:
+            volatile LONG* pCount = (player == BLF_PLAYER_BLACK)
+                ? (volatile LONG*)&pSt->mergeFileBlackCount[destDirIdx]
+                : (volatile LONG*)&pSt->mergeFileWhiteCount[destDirIdx];
+            int fileIdx = (int)InterlockedExchangeAdd(pCount, 1);
+
+            char outPath[MAX_FULL_PATH_NAME];
+            if (compress)
+                BLFZNameImergeFile(outPath, sizeof(outPath), pSt->mergeDirectory[destDirIdx],
+                                   level, player, fileIdx);
+            else
+                BLFNameImergeFile(outPath, sizeof(outPath), pSt->mergeDirectory[destDirIdx],
+                                  level, player, fileIdx);
+
+            LoggerLog("DoCrossDriveIntermediateMerge: %s -> '%s' (%d files, %.2f GB)\n",
+                      BLFPlayerStr(player), outPath, numFiles,
+                      totalBytes / (1024.0 * 1024.0 * 1024.0));
+
+            uint64_t unique = KWayMergeFiles(paths, numFiles, outPath,
+                                              nullptr, compress, &pSt->terminateThreads);
+
+            int64_t actual = 0;
+            if (compress)
+            {
+                WIN32_FILE_ATTRIBUTE_DATA fad = {};
+                if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
+                    actual = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
+            }
+            else
+            {
+                actual = (int64_t)(unique * sizeof(BOARD_KEY_DISK) + sizeof(BlasterFileTrailer));
+            }
+            DriveReclaim(pSt, pSt->mergeDirectory[destDirIdx][0], totalBytes - actual);
+
+            for (int fi = 0; fi < numFiles; fi++)
+            {
+                DriveReclaim(pSt, paths[fi][0], sizes[fi]);
+                DeleteFileA(paths[fi]);
+                MemFree(paths[fi]);
+            }
+
+            LoggerLog("DoCrossDriveIntermediateMerge: %s done (%llu unique)\n",
+                      BLFPlayerStr(player), unique);
         }
 
-        MemFree(fileSizes);
-        MemFree(inputPaths);
+        // Advance consumed pointers past the files we just merged
+        for (int ti = 0; ti < pSt->numMergeWriters; ti++)
+            consumedArr[ti] = snapArr[ti];
+
+        MemFree(paths);
+        MemFree(sizes);
     }
 
-    pSt->imergeActive[mwIdx] = 0;
-    // Reset so the next intermediate merge re-initialises the total correctly
-    pSt->imergeTotalInputBytes[mwIdx] = 0;
+    pSt->imergeActive[0]          = 0;
+    pSt->imergeTotalInputBytes[0] = 0;
 
-    pSt->mwBlackFileCount[mwIdx] = 0;
-    pSt->mwWhiteFileCount[mwIdx] = 0;
+    LeaveCriticalSection(&pSt->imergeCS);
 }
 
 // ============================================================================

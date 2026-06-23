@@ -44,12 +44,18 @@ Store drive (Y:)
   merge-writer threads when VRAM is ~80% full.
 - **Merge-writer threads** — one per fast NVMe directory.  Accumulate GPU flush segments
   in a large RAM buffer (two-stack layout mirroring the GPU), k-way merge + dedup per
-  player on flush, write separate `_black_` and `_white_` BLF files.  Trigger
-  `DoIntermediateMerge` to the HDD intermediate drive (F:) when NVMe space drops below
-  threshold.
-- **Intermediate merge** — batches of up to `MAX_MERGE_FANIN=256` writer files are k-way
-  merged to a medium drive (F:).  Falls back to the store merge directory on Y: if F:
-  has no room.
+  player on flush, write separate `_black_` and `_white_` BLF files.  After each flush,
+  check two triggers for `DoCrossDriveIntermediateMerge`: (1) total unconsumed writer
+  files per color across all NVMe drives ≥ `MAX_MERGE_FANIN`; (2) single-drive free
+  space below 20 GB threshold (safety net).
+- **Intermediate merge** — `DoCrossDriveIntermediateMerge` gathers unconsumed writer
+  files from **all** NVMe drives simultaneously (not per-drive), catching cross-drive
+  duplicates during the solve.  Up to `MAX_MERGE_FANIN=3500` files per color are merged
+  to a single imerge output on F:.  If F: is full, a **total flush** occurs: existing F:
+  imerge files for this level are also pulled in, and the combined set is written to Y:
+  in one shot — clearing all fast drives at once so F: can be reused.  Only one MW
+  thread runs a merge at a time (guarded by `imergeCS`); the other skips via
+  `TryEnterCriticalSection`.
 - **End-of-level merge** — two threads run concurrently (one per player), each performing
   a `CascadingMerge` over all remaining writer files and intermediate files.  If per-player
   file count exceeds 256, a two-phase cascade is used: each group's temp is placed on the
