@@ -4,6 +4,23 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.22] - 2026-06-23
+
+### Display: fix Drv column 1-char shift; fix solve% squish at 100%
+
+**`StatsListener.cpp`**
+
+- Drive table: Drv column data was `   %c` (4 chars) while the header/separator
+  column is 5 chars wide (`  Drv` / `  ---`).  Every data row was shifted 1 char
+  left relative to the header.  Fixed by changing `   %c` → `    %c` in both the
+  showUncomp and !showUncomp data rows.
+- Solve phase progress: `[solve%5.1f%%]` with 100.0% produced `[solve100.0%]` with
+  no space between "solve" and the number.  `%5.1f` fits values ≤ 99.9 (space +
+  4 chars) but 100.0 fills all 5 chars leaving no padding.  Fixed to `%6.1f` so
+  `[solve 100.0%]` always has a leading space.
+
+---
+
 ## [0.2.21] - 2026-06-23
 
 ### Display: fix drive-table GB column alignment; show merge % to 3 decimal places

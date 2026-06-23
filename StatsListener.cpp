@@ -108,7 +108,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                            && d->levelBytesUncompressed != d->levelBytesWritten);
         if (showUncomp)
             n += snprintf(buf + n, bufSize - n,
-                          "   %c  %4d  %5llu  %6.2f GB  %7.2f GB  %7.2f GB  %3d  %3d\n",
+                          "    %c  %4d  %5llu  %6.2f GB  %7.2f GB  %7.2f GB  %3d  %3d\n",
                           d->driveLetter, d->numDirs,
                           (unsigned long long)d->levelFilesWritten,
                           d->levelBytesWritten      / (1024.0 * 1024.0 * 1024.0),
@@ -117,7 +117,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                           liveBlack, liveWhite);
         else
             n += snprintf(buf + n, bufSize - n,
-                          "   %c  %4d  %5llu  %6.2f GB            %7.2f GB  %3d  %3d\n",
+                          "    %c  %4d  %5llu  %6.2f GB            %7.2f GB  %3d  %3d\n",
                           d->driveLetter, d->numDirs,
                           (unsigned long long)d->levelFilesWritten,
                           d->levelBytesWritten / (1024.0 * 1024.0 * 1024.0),
@@ -224,7 +224,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
         else if (pSt->currentPhase
                  && strcmp(pSt->currentPhase, "GPU solving") == 0
                  && pSt->currentLevelTotalBoards > 0)
-            snprintf(phaseStr, sizeof(phaseStr), "[solve%5.1f%%]",
+            snprintf(phaseStr, sizeof(phaseStr), "[solve%6.1f%%]",
                      100.0 * (double)cur->boardsReadFromStore
                            / (double)pSt->currentLevelTotalBoards);
         n += snprintf(buf + n, bufSize - n,
