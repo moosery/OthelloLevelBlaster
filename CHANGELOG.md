@@ -4,6 +4,26 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.18] - 2026-06-23
+
+### Fix resume scan: white-only levels caused restart from L0
+
+**`InitSolver.cpp`** — `ScanForResumeLevel()`
+
+The scan probed only for `Level_NNNN_*_black_0000.blf[z]`.  Some levels
+produce only white-side output (e.g. Level_0001 is white-only because the
+single starting board has only one legal move and it flips to white-to-move).
+When the black probe found nothing, the scan returned that level as the first
+"missing" file, computing `resumeLevel = 0` and causing the solver to restart
+from the beginning even though storeDir had valid data.
+
+Fix: replaced the black-only probe with `findAnyLevelFile()`, which tries
+`black` then `white` in both `.blf` and `.blfz` variants.  A level is
+considered present when at least one store file exists and passes trailer
+validation.
+
+---
+
 ## [0.2.17] - 2026-06-23
 
 ### Fix purge bug: storeDir was deleted on restart, destroying completed level files

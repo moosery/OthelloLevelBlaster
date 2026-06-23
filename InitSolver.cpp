@@ -192,34 +192,45 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     LoggerLog("Allocation complete.\n");
 }
 
+// Find any store file for the given level (either player, either extension).
+// Returns true and fills outPath if found; outPath may be NULL if path not needed.
+static bool findAnyLevelFile(const char* storeDir, int level,
+                             char* outPath, size_t outPathSize)
+{
+    static const char* players[] = { "black", "white" };
+    static const char* exts[]    = { "blf", "blfz" };
+    for (int p = 0; p < 2; p++)
+    {
+        for (int e = 0; e < 2; e++)
+        {
+            char pattern[MAX_FULL_PATH_NAME];
+            snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_%s_0000.%s",
+                     storeDir, level, players[p], exts[e]);
+            WIN32_FIND_DATAA fd;
+            HANDLE h = FindFirstFileA(pattern, &fd);
+            if (h != INVALID_HANDLE_VALUE)
+            {
+                FindClose(h);
+                if (outPath)
+                    snprintf(outPath, outPathSize, "%s\\%s", storeDir, fd.cFileName);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static int ScanForResumeLevel(POthelloLevelBlasterState pState)
 {
-    // A level is complete when its black store file (index 0) exists and is valid.
-    // The white store file is optional (some levels may have only one player stream).
-    // Board size is unknown at scan time, so we match any board size via wildcard:
-    // "Level_NNNN_*_black_0000.blf".
+    // A level is complete when at least one store file (black or white) exists and is valid.
+    // Either player may have zero boards at low levels (e.g. Level_0001 is white-only),
+    // so checking only the black file would incorrectly treat those levels as missing.
     for (int level = 0; level < MAX_LEVELS; level++)
     {
-        char pattern[MAX_FULL_PATH_NAME];
-        snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_black_0000.blf",
-                 pState->storeDirectory, level);
-
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pattern, &fd);
-        if (h == INVALID_HANDLE_VALUE)
-        {
-            // Also probe for compressed store files.
-            snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_black_0000.blfz",
-                     pState->storeDirectory, level);
-            h = FindFirstFileA(pattern, &fd);
-            if (h == INVALID_HANDLE_VALUE)
-                return level;  // no black file for this level — resume from here
-        }
-        FindClose(h);
-
-        // File exists: validate its trailer
         char fullPath[MAX_FULL_PATH_NAME];
-        snprintf(fullPath, sizeof(fullPath), "%s\\%s", pState->storeDirectory, fd.cFileName);
+        if (!findAnyLevelFile(pState->storeDirectory, level, fullPath, sizeof(fullPath)))
+            return level;
+
         BLFReader* r = BLFOpen(fullPath);
         if (!r)
         {
