@@ -4,6 +4,15 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.23] - 2026-06-23
+
+### Display: solve% to 3 decimal places
+
+**`StatsListener.cpp`** — solve phase progress: `%6.1f` → `%8.3f` so
+`[solve   0.100%]`, `[solve  42.200%]`, `[solve 100.000%]`.
+
+---
+
 ## [0.2.22] - 2026-06-23
 
 ### Display: fix drive-table column alignment; fix solve% squish at 100%
