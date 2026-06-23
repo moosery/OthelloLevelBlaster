@@ -192,54 +192,83 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
     LoggerLog("Allocation complete.\n");
 }
 
-// Find any store file for the given level (either player, either extension).
-// Returns true and fills outPath if found; outPath may be NULL if path not needed.
-static bool findAnyLevelFile(const char* storeDir, int level,
-                             char* outPath, size_t outPathSize)
+enum LevelFileStatus { LFS_VALID, LFS_CORRUPT, LFS_ABSENT };
+
+// Probes for Level_NNNN_*_<player>_0000.blf[z], validates the trailer, and
+// returns LFS_VALID / LFS_CORRUPT (file existed but deleted) / LFS_ABSENT.
+// outPath (MAX_FULL_PATH_NAME) is set when the file is found (valid or corrupt).
+static LevelFileStatus checkLevelFile(const char* storeDir, int level, const char* player,
+                                      char* outPath, size_t outPathSize)
 {
-    static const char* players[] = { "black", "white" };
-    static const char* exts[]    = { "blf", "blfz" };
-    for (int p = 0; p < 2; p++)
+    static const char* exts[] = { "blf", "blfz" };
+    for (int e = 0; e < 2; e++)
     {
-        for (int e = 0; e < 2; e++)
+        char pattern[MAX_FULL_PATH_NAME];
+        snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_%s_0000.%s",
+                 storeDir, level, player, exts[e]);
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        FindClose(h);
+        snprintf(outPath, outPathSize, "%s\\%s", storeDir, fd.cFileName);
+        BLFReader* r = BLFOpen(outPath);
+        if (!r)
         {
-            char pattern[MAX_FULL_PATH_NAME];
-            snprintf(pattern, sizeof(pattern), "%s\\Level_%04d_*_%s_0000.%s",
-                     storeDir, level, players[p], exts[e]);
-            WIN32_FIND_DATAA fd;
-            HANDLE h = FindFirstFileA(pattern, &fd);
-            if (h != INVALID_HANDLE_VALUE)
-            {
-                FindClose(h);
-                if (outPath)
-                    snprintf(outPath, outPathSize, "%s\\%s", storeDir, fd.cFileName);
-                return true;
-            }
+            LoggerLog("ScanForResumeLevel: corrupt level %d %s file, deleting '%s'\n",
+                      level, player, outPath);
+            DeleteFileA(outPath);
+            return LFS_CORRUPT;
         }
+        BLFClose(&r);
+        return LFS_VALID;
     }
-    return false;
+    return LFS_ABSENT;
 }
 
 static int ScanForResumeLevel(POthelloLevelBlasterState pState)
 {
-    // A level is complete when at least one store file (black or white) exists and is valid.
-    // Either player may have zero boards at low levels (e.g. Level_0001 is white-only),
-    // so checking only the black file would incorrectly treat those levels as missing.
+    // Check both players independently for each level.
+    // Rules:
+    //   - Both absent               → level missing; resume from here.
+    //   - Either corrupt            → delete both (valid and corrupt); resume from here
+    //                                 so the producing iteration rewrites all output.
+    //   - One valid, other absent   → treat as legitimately one-sided (that player had
+    //                                 zero boards); level is complete.
+    //   - Both valid                → level complete.
+    //
+    // Undetectable edge case: Ctrl+C between two concurrent merge-thread completions
+    // (one player's file fully written, other not yet started and thus absent).
+    // Without a sentinel file we cannot distinguish this from a genuine one-sided level.
     for (int level = 0; level < MAX_LEVELS; level++)
     {
-        char fullPath[MAX_FULL_PATH_NAME];
-        if (!findAnyLevelFile(pState->storeDirectory, level, fullPath, sizeof(fullPath)))
+        char blackPath[MAX_FULL_PATH_NAME] = {};
+        char whitePath[MAX_FULL_PATH_NAME] = {};
+        LevelFileStatus bs = checkLevelFile(pState->storeDirectory, level, "black",
+                                            blackPath, sizeof(blackPath));
+        LevelFileStatus ws = checkLevelFile(pState->storeDirectory, level, "white",
+                                            whitePath, sizeof(whitePath));
+
+        if (bs == LFS_ABSENT && ws == LFS_ABSENT)
             return level;
 
-        BLFReader* r = BLFOpen(fullPath);
-        if (!r)
+        if (bs == LFS_CORRUPT || ws == LFS_CORRUPT)
         {
-            LoggerLog("ScanForResumeLevel: incomplete level %d file, deleting '%s'\n",
-                      level, fullPath);
-            DeleteFileA(fullPath);
+            // Delete whichever file is still valid so the producing iteration
+            // regenerates both from scratch.
+            if (bs == LFS_VALID)
+            {
+                LoggerLog("ScanForResumeLevel: deleting valid level %d black alongside corrupt white\n", level);
+                DeleteFileA(blackPath);
+            }
+            if (ws == LFS_VALID)
+            {
+                LoggerLog("ScanForResumeLevel: deleting valid level %d white alongside corrupt black\n", level);
+                DeleteFileA(whitePath);
+            }
             return level;
         }
-        BLFClose(&r);
+
+        // LFS_VALID or LFS_ABSENT for each player — level complete.
     }
     return MAX_LEVELS;
 }

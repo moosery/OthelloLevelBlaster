@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.18"
+#define VERSION           "0.2.19"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf

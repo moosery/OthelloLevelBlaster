@@ -162,7 +162,7 @@ Player turn (black-to-move / white-to-move) is encoded in the filename, not the 
 | `imerge_LNNN_black_NNNN.blfz` | Intermediate merge output on F: |
 | `cascade_temp_LNNN_black_NNNN.blfz` | Cascade temp file on F: (deleted after use) |
 
-## Performance (6×6, RTX 4080 SUPER, v0.2.18)
+## Performance (6×6, RTX 4080 SUPER, v0.2.19)
 
 *Measured run: RTX 4080 SUPER, 64 GB RAM, D:/E: NVMe, F: HDD (188 MB/s), Y: NAS (~59 MB/s write).
 Timing for L12–L17 from v0.2.11 run; L18–L20 from v0.2.10 run.

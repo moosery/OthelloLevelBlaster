@@ -4,6 +4,38 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.19] - 2026-06-23
+
+### Fix resume scan: correctly handle corrupt, one-sided, and timing-interrupted levels
+
+**`InitSolver.cpp`** — `ScanForResumeLevel()` rewritten
+
+The v0.2.18 fix (check either player) left two gaps:
+
+1. **Partial write + valid partner**: if Ctrl+C hit while one player's merge
+   file was mid-write, `BLFOpen` fails on the partial file. The v0.2.18 code
+   would delete it but then accept the other player's valid file as "level
+   complete" — causing the next iteration to read an incomplete level.
+
+2. **Both files checked**: v0.2.18 only validated the first file found; the
+   second was never opened.
+
+New logic (`checkLevelFile` + `ScanForResumeLevel`):
+- Both players (black and white) are probed and validated independently.
+- If **both absent** → level missing; resume from here.
+- If **either corrupt** → delete both files (valid and corrupt) so the
+  producing iteration regenerates all output from scratch; resume from here.
+- If **one valid, other absent** → treat as a legitimately one-sided level
+  (that player had zero boards); level is complete.
+- If **both valid** → level complete.
+
+Known limitation: if Ctrl+C hits *between* two concurrent merge-thread
+completions (one player's file fully written, the other not yet started),
+the absent file is indistinguishable from a genuine zero-board player. A
+sentinel file after both threads finish would close this gap; deferred for now.
+
+---
+
 ## [0.2.18] - 2026-06-23
 
 ### Fix resume scan: white-only levels caused restart from L0
