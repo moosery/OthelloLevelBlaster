@@ -4,6 +4,43 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.17] - 2026-06-23
+
+### Fix purge bug: storeDir was deleted on restart, destroying completed level files
+
+**`InitSolver.cpp`** — `cleanUpDrives()`
+
+The startup purge unconditionally deleted `Y:\...\storeDir` whenever
+`resumeLevel` was 0.  Because `resumeLevel = firstMissingFile - 1`, the value
+is 0 for both a completely fresh run (no files) **and** the case where only
+Level_0 exists (L1 is the first missing file, `1 - 1 = 0`).  Any restart where
+auto-resume returned 0 would destroy the entire store archive.
+
+Additionally, the design was wrong at a higher level: `storeDir` holds the
+**permanent completed-level output** and should never be treated as an
+ephemeral working directory.  Only `writerDir_N` (NVMe MW working space),
+`mergeDir` (F: intermediate merge), and `storeMergeDir` (Y: cascade temps)
+are ephemeral and need purging on restart.
+
+Fix: removed the `else if` branch that deleted `storeDir`.  The directory is
+now always preserved across restarts regardless of `resumeLevel`.
+
+---
+
+## [0.2.16] - 2026-06-23
+
+### Raise memory budget limits; remove redundant cap constant
+
+**`Utility/SysMemInfo.h`**
+- Removed `BUDGET_PCT_CAP` — was identical to `BUDGET_PCT_MAX` and therefore
+  redundant.  The separate constant added no protection in practice.
+- `BUDGET_PCT_MAX` raised 0.90 → **0.95** (leaves ~5% of free RAM untouched).
+- `BUDGET_PCT_RECOMMENDED` raised 0.75 → **0.90** (leaves ~10% of free RAM).
+- `MM_SPECIFIED` path still capped at `BUDGET_PCT_MAX` so an oversized explicit
+  request cannot cause OOM.
+
+---
+
 ## [0.2.15] - 2026-06-22
 
 ### Cross-drive intermediate merge with file-count trigger and total-flush fallback

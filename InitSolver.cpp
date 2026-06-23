@@ -257,15 +257,13 @@ static void cleanUpDrives(POthelloLevelBlasterState pState, PMachineInfo pMachin
         DeleteDirRecursive(pState->storeMergeDirectory);
     }
 
+    // storeDir is never purged — it holds the permanent level output archive.
+    // Only working directories (writerDirs, mergeDir, storeMergeDir) are ephemeral.
     if (pState->resumeLevel > 0)
-    {
-        LoggerLog("  Keeping store dir (resuming from level %d).\n", pState->resumeLevel);
-    }
-    else if (GetFileAttributesA(pState->storeDirectory) != INVALID_FILE_ATTRIBUTES)
-    {
-        LoggerLog("  Deleting store dir: %s\n", pState->storeDirectory);
-        DeleteDirRecursive(pState->storeDirectory);
-    }
+        LoggerLog("  Resuming from level %d (levels 0..%d already in store).\n",
+                  pState->resumeLevel, pState->resumeLevel - 1);
+    else
+        LoggerLog("  Store dir kept (fresh run or resuming from level 0).\n");
 
     RefreshDriveFreeSpace(&pMachineInfo->g_drives);
     LoggerLog("Purge complete.\n");

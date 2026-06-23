@@ -162,24 +162,33 @@ Player turn (black-to-move / white-to-move) is encoded in the filename, not the 
 | `imerge_LNNN_black_NNNN.blfz` | Intermediate merge output on F: |
 | `cascade_temp_LNNN_black_NNNN.blfz` | Cascade temp file on F: (deleted after use) |
 
-## Performance (6×6, RTX 4080 SUPER, v0.2.11)
+## Performance (6×6, RTX 4080 SUPER, v0.2.17)
 
 *Measured run: RTX 4080 SUPER, 64 GB RAM, D:/E: NVMe, F: HDD (188 MB/s), Y: NAS (~59 MB/s write).
-Y: (cumul.) = total compressed store size on Y: at end of that level (all levels L0–N).*
+Timing for L12–L17 from v0.2.11 run; L18–L20 from v0.2.10 run.
+Y: (cumul.) = total logical file size on Y: at end of that level (all levels L0–N), measured from current store files.
+ZFS transparent compression on the NAS pool gives ~2.1× additional savings on top of the .blfz application compression,
+so physical disk usage is roughly half the values shown.*
 
 | Level | Unique boards | Solve    | Merge    | Total    | Y: (cumul.) |
 |-------|--------------|----------|----------|----------|-------------|
-| 12    | 251 M        | 5.9 s    | 12.9 s   | 18.8 s   | 1.15 GB     |
-| 13    | 1.21 B       | 23.6 s   | 57.8 s   | 81.4 s   | 5.21 GB     |
-| 14    | 5.01 B       | 1.8 min  | 4.7 min  | 6.4 min  | 20.4 GB     |
-| 15    | 19.8 B       | 5.8 min  | 19.9 min | 25.8 min | 76.9 GB     |
-| 16    | 65.9 B       | 22.2 min | 71.1 min | 93.3 min | 245 GB      |
-| 17    | 203.5 B      | 68.5 min | 6.4 h    | 7.6 h    | 730 GB      |
+| 12    | 251 M        | 5.9 s    | 12.9 s   | 18.8 s   | 0.31 GB     |
+| 13    | 1.21 B       | 23.6 s   | 57.8 s   | 81.4 s   | 1.46 GB     |
+| 14    | 5.01 B       | 1.8 min  | 4.7 min  | 6.4 min  | 6.67 GB     |
+| 15    | 19.8 B       | 5.8 min  | 19.9 min | 25.8 min | 27.1 GB     |
+| 16    | 65.9 B       | 22.2 min | 71.1 min | 93.3 min | 104 GB      |
+| 17    | 203.5 B      | 68.5 min | 6.4 h    | 7.6 h    | 349 GB      |
+| 18    | 526 B        | 3.3 h    | 16.5 h   | 19.8 h   | 1.05 TB     |
+| 19    | 1.235 T      | 9.0 h    | 49.4 h   | 58.4 h   | 2.84 TB     |
+| 20    | ~2.82 T      | —        | —        | —        | 6.90 TB     |
 
 Y: NAS write speed (~59 MB/s sustained) dominates merge time through L16.  At L17 the
-per-player file count (~435 files/player) exceeds `MAX_MERGE_FANIN=256`, triggering a
-two-phase cascade merge through F: HDD — that is why merge time jumps from 71 min (L16)
-to 6.4 h (L17).  Compression ratio improves level over level: ~3.3× at L12, ~4.2× at L17.
+cascade merge through F: HDD kicks in, causing merge time to jump from 71 min (L16) to
+6.4 h (L17).  At L19 (v0.2.10), D: and E: accumulated 3056 and 3080 writer files — the
+end-of-level cascade overflowed F: and spilled cascade temps to Y:.  v0.2.15 raises
+`MAX_MERGE_FANIN` to 3500 (from 256) and adds a cross-drive intermediate merge, which
+will substantially reduce cascade overhead at L20+.
+Compression ratio is ~3.3× at L12, ~4.2× at L17–L19.
 
 ## Project layout
 
