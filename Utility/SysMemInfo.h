@@ -44,7 +44,7 @@ inline uint64_t ParseMemorySize(const char* s)
 // Fraction of free (available) physical RAM to use per memory mode.
 // Adjust these compile-time constants to tune memory pressure.
 static constexpr double BUDGET_PCT_MAX         = 0.95;  // leave ~5% of free RAM untouched
-static constexpr double BUDGET_PCT_RECOMMENDED = 0.90;  // leave ~10% of free RAM untouched
+static constexpr double BUDGET_PCT_RECOMMENDED = 0.93;  // leave ~7% of free RAM untouched
 
 // Returns the total memory budget based on currently available (free) physical RAM.
 // All modes are relative to free RAM, so the result adapts to whatever else is running.

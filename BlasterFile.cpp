@@ -2,8 +2,11 @@
 #include "Error.h"
 #include "Logger.h"
 #include "Mem.h"
+#include "FileAndDirUtils.h"
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
+#include <windows.h>
 
 // ============================================================
 // Delta + zigzag helpers (used by both writer and reader)
@@ -29,6 +32,7 @@ static inline size_t VarIntPut(uint64_t v, uint8_t* out)
 struct __BLFWriter
 {
     FILE*          f;
+    char           path[MAX_FULL_PATH_NAME];
     uint64_t       count;
     BOARD_KEY_DISK firstKey;
     BOARD_KEY_DISK lastKey;
@@ -46,7 +50,13 @@ static void FlushVarBuf(BLFWriter* pw)
 {
     if (pw->varBufPos == 0) return;
     if (fwrite(pw->varBuf, 1, pw->varBufPos, pw->f) != pw->varBufPos)
-        Fatal(FATAL_FILE_OPEN, "BLFWriterRecord: compressed write failed");
+    {
+        DWORD err = GetLastError();
+        Fatal(FATAL_FILE_OPEN,
+              "BLFWriterRecord: compressed write failed on '%s' "
+              "(tried %zu bytes, GetLastError=%lu, errno=%d)",
+              pw->path, pw->varBufPos, err, errno);
+    }
     pw->compBytesTotal += pw->varBufPos;
     pw->varBufPos = 0;
 }
@@ -62,6 +72,7 @@ BLFWriter* BLFWriterOpen(const char* path)
     if (!pw) { fclose(f); Fatal(FATAL_ALLOCATION_FAILED, "BLFWriterOpen: cannot allocate writer"); }
     memset(pw, 0, sizeof(BLFWriter));
     pw->f = f;
+    strncpy(pw->path, path, sizeof(pw->path) - 1);
     return pw;
 }
 
@@ -76,6 +87,7 @@ BLFWriter* BLFWriterOpenZ(const char* path)
     memset(pw, 0, sizeof(BLFWriter));
     pw->f          = f;
     pw->compressed = true;
+    strncpy(pw->path, path, sizeof(pw->path) - 1);
     pw->varBuf     = (uint8_t*)MemMalloc("BLFWriterZBuf", BLF_COMP_WRITE_BUFFER_SIZE);
     if (!pw->varBuf)
     {

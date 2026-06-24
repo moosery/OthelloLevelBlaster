@@ -4,6 +4,37 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.25] - 2026-06-24
+
+### Fix MW-drive exhaustion, improve write-failure diagnostics, fix UTF-8 log chars
+
+**Root cause of L20 crash**: `DoCrossDriveIntermediateMerge` used
+`TryEnterCriticalSection` — when thread 1 was running a merge, thread 0
+received `false` and returned immediately instead of waiting.  Thread 0 then
+kept writing to a nearly-full D: drive until it physically ran out of space
+(48 KB free), causing the 64 KB `FlushVarBuf` write to fail.
+
+**`MergeFiles.cpp` (`DoCrossDriveIntermediateMerge`)** — changed
+`TryEnterCriticalSection` to `EnterCriticalSection`.  The calling thread now
+blocks until any in-progress merge completes, then re-checks space/file-count
+under the lock.  If the space is now fine (the other thread's merge cleared both
+drives), it returns without doing another merge; otherwise it runs its own merge.
+This prevents a MW thread from continuing to write to a critically-low drive
+while the other thread handles the merge.  Also replaced the em dash in the
+`"F: full -- total flush"` log string with ASCII `--`, and similarly for the
+`CascadingMerge: ... group %d --` Fatal message.
+
+**`BlasterFile.cpp` (`BLFWriter`, `FlushVarBuf`, `BLFWriterOpen`,
+`BLFWriterOpenZ`)** — added `char path[MAX_FULL_PATH_NAME]` to the `BLFWriter`
+struct; both open functions now copy the path into the struct.  `FlushVarBuf`
+now reports the file path, bytes attempted, `GetLastError()`, and `errno` on
+write failure instead of the bare "compressed write failed" message.
+
+**`BPlusTreeHybrid/BPDelete.cpp`** — replaced em dash in the
+`stDataCnt underflow` Fatal string with ASCII `--`.
+
+---
+
 ## [0.2.24] - 2026-06-23
 
 ### Persist level stats across restarts

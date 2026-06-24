@@ -261,7 +261,7 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
             }
             if (!chosenDir)
                 Fatal(FATAL_DRIVE_SPACE,
-                      "CascadingMerge: %s group %d — no temp drive has room for even one file",
+                      "CascadingMerge: %s group %d -- no temp drive has room for even one file",
                       BLFPlayerStr(player), numTemps + 1);
 
             // Keep the status group-count estimate current if we're creating more groups.
@@ -505,10 +505,12 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
 // for this level and player, merging the combined set to Y: — clearing both
 // the NVMe drives and F: in one shot so all fast drives are free again.
 //
-// Uses TryEnterCriticalSection so the second MW thread skips gracefully when
-// the first is already running a merge.  File counts are snapshotted under
-// the lock; because counts are incremented AFTER close, all files with index
-// < snapshot[i] are guaranteed complete and safe to read/delete.
+// Blocks until any in-progress merge by the other MW thread completes, then
+// re-checks space/file-count under the lock.  EnterCriticalSection (not Try)
+// is used so that a thread with a nearly-full drive cannot skip the wait and
+// keep writing until the drive exhausts itself.  File counts are snapshotted
+// under the lock; because counts are incremented AFTER close, all files with
+// index < snapshot[i] are guaranteed complete and safe to read/delete.
 // ============================================================================
 
 static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
@@ -517,8 +519,7 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
     int                       level    = (int)pSt->playLevel;
     bool                      compress = (pCtx->pConfig->compressMode == COMPRESS_ALL);
 
-    if (!TryEnterCriticalSection(&pSt->imergeCS))
-        return;  // another MW thread is already handling this
+    EnterCriticalSection(&pSt->imergeCS);
 
     // Re-check under the lock: counts may have dropped since the caller checked.
     {
@@ -645,7 +646,7 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
             // F: is full.  Pull in all existing F: imerge files for this level+player
             // so the combined merge catches every possible cross-drive duplicate,
             // then flush everything to Y: to clear all fast drives at once.
-            LoggerLog("DoCrossDriveIntermediateMerge: %s F: full — total flush to %c:\n",
+            LoggerLog("DoCrossDriveIntermediateMerge: %s F: full -- total flush to %c:\n",
                       BLFPlayerStr(player), pCtx->pConfig->storeDrive);
 
             for (int d = 0; d < pSt->numMergeDirs && numFiles < kMaxFiles; d++)

@@ -78,7 +78,7 @@ BPRc BPRemoveFromNonUnderflowLeaf(PBPTree pTree, PBPIdxInfo pIdxInfo, PBPNode pL
 
 	RWLockWriteLock("BPRemoveFromNonUnderflowLeaf-idx", &pIdxInfo->rwIdxLock);
 	if (pIdxInfo->stDataCnt == 0)
-		Fatal(FATAL_BP_DELETE, "BPRemoveFromNonUnderflowLeaf: stDataCnt underflow — attempted to decrement below zero\n");
+		Fatal(FATAL_BP_DELETE, "BPRemoveFromNonUnderflowLeaf: stDataCnt underflow -- attempted to decrement below zero\n");
 	else
 		(pIdxInfo->stDataCnt)--;
 	RWLockWriteUnlock("BPRemoveFromNonUnderflowLeaf-idx", &pIdxInfo->rwIdxLock);
