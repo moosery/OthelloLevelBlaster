@@ -2,6 +2,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
+#include <windows.h>
 
 #include "StatsListener.h"
 #include "DriveLedger.h"
@@ -136,38 +137,79 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
     }
 
     // Active intermediate merges (per writer thread)
-    for (int i = 0; i < pSt->numMergeWriters; i++)
     {
-        if (pSt->imergeActive[i])
+        uint64_t nowMs = GetTickCount64();
+        for (int i = 0; i < pSt->numMergeWriters; i++)
         {
-            double doneGB  = pSt->imergeDoneInputBytes[i]  / (1024.0 * 1024.0 * 1024.0);
-            double totalGB = pSt->imergeTotalInputBytes[i] / (1024.0 * 1024.0 * 1024.0);
-            double pct     = (pSt->imergeTotalInputBytes[i] > 0)
-                             ? 100.0 * (double)pSt->imergeDoneInputBytes[i]
-                                     / (double)pSt->imergeTotalInputBytes[i]
-                             : 0.0;
-            n += snprintf(buf + n, bufSize - n,
-                          "  iMerge mw[%d] %c:       : %.2f / %.2f GB  (%.3f%%)\n",
-                          i, pSt->mwDirectory[i][0], doneGB, totalGB, pct);
+            if (pSt->imergeActive[i])
+            {
+                double   doneGB  = pSt->imergeDoneInputBytes[i]  / (1024.0 * 1024.0 * 1024.0);
+                double   totalGB = pSt->imergeTotalInputBytes[i] / (1024.0 * 1024.0 * 1024.0);
+                double   pct     = (pSt->imergeTotalInputBytes[i] > 0)
+                                   ? 100.0 * (double)pSt->imergeDoneInputBytes[i]
+                                           / (double)pSt->imergeTotalInputBytes[i]
+                                   : 0.0;
+                uint64_t elapsedMs = nowMs - pSt->imergeStartTickMs[i];
+                double   mbps      = (elapsedMs > 200 && pSt->imergeDoneInputBytes[i] > 0)
+                                   ? (double)pSt->imergeDoneInputBytes[i] / (1024.0 * 1024.0)
+                                     / (elapsedMs / 1000.0)
+                                   : 0.0;
+                n += snprintf(buf + n, bufSize - n,
+                              "  iMerge mw[%d] %c:       : %.2f / %.2f GB  (%.3f%%)  @ %.0f MB/s\n",
+                              i, pSt->mwDirectory[i][0], doneGB, totalGB, pct, mbps);
+            }
+        }
+    }
+
+    // Active end-of-level merge (per player, runs concurrently for white and black)
+    if (pSt->currentPhase && strcmp(pSt->currentPhase, "Merging to store") == 0)
+    {
+        uint64_t nowMs = GetTickCount64();
+        const char* playerNames[2] = { "white", "black" };
+        for (int p = 0; p <= 1; p++)
+        {
+            if (pSt->mergeTotalInputBytes[p] > 0)
+            {
+                double   doneGB    = (double)pSt->mergeProgressBytes[p]   / (1024.0 * 1024.0 * 1024.0);
+                double   totalGB   = (double)pSt->mergeTotalInputBytes[p] / (1024.0 * 1024.0 * 1024.0);
+                double   pct       = 100.0 * (double)pSt->mergeProgressBytes[p]
+                                           / (double)pSt->mergeTotalInputBytes[p];
+                uint64_t elapsedMs = nowMs - pSt->mergeStartTickMs[p];
+                double   mbps      = (elapsedMs > 200 && pSt->mergeProgressBytes[p] > 0)
+                                   ? (double)pSt->mergeProgressBytes[p] / (1024.0 * 1024.0)
+                                     / (elapsedMs / 1000.0)
+                                   : 0.0;
+                n += snprintf(buf + n, bufSize - n,
+                              "  Merge  %-5s -> %c:    : %.2f / %.2f GB  (%.3f%%)  @ %.0f MB/s\n",
+                              playerNames[p], pCfg->storeDrive, doneGB, totalGB, pct, mbps);
+            }
         }
     }
 
     // Cascade progress — shown when CascadingMerge is writing intermediate temp files.
     // That player's merge % (in the history row) will read 0 until the final pass starts;
     // these lines give visibility into what would otherwise look like a stalled merge.
-    for (int p = 0; p <= 1; p++)
     {
-        if (pSt->cascadeActive[p])
+        uint64_t nowMs = GetTickCount64();
+        for (int p = 0; p <= 1; p++)
         {
-            const char* playerName = (p == 1) ? "black" : "white";
-            double gbWritten = (double)(int64_t)pSt->cascadeGroupProgressBytes[p]
-                               / (1024.0 * 1024.0 * 1024.0);
-            n += snprintf(buf + n, bufSize - n,
-                          "  Cascade %-5s         : group %d / %d  (%.2f GB to temp)\n",
-                          playerName,
-                          pSt->cascadeGroupsDone[p] + 1,
-                          pSt->cascadeNumGroups[p],
-                          gbWritten);
+            if (pSt->cascadeActive[p])
+            {
+                const char* playerName = (p == 1) ? "black" : "white";
+                double   gbWritten = (double)(int64_t)pSt->cascadeGroupProgressBytes[p]
+                                     / (1024.0 * 1024.0 * 1024.0);
+                uint64_t elapsedMs = nowMs - pSt->cascadeGroupStartTickMs[p];
+                double   mbps      = (elapsedMs > 200 && pSt->cascadeGroupProgressBytes[p] > 0)
+                                   ? (double)(int64_t)pSt->cascadeGroupProgressBytes[p] / (1024.0 * 1024.0)
+                                     / (elapsedMs / 1000.0)
+                                   : 0.0;
+                n += snprintf(buf + n, bufSize - n,
+                              "  Cascade %-5s         : group %d / %d  (%.2f GB to temp)  @ %.0f MB/s\n",
+                              playerName,
+                              pSt->cascadeGroupsDone[p] + 1,
+                              pSt->cascadeNumGroups[p],
+                              gbWritten, mbps);
+            }
         }
     }
 

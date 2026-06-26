@@ -4,6 +4,24 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.29] - 2026-06-26
+
+### Add MB/s throughput display to all merge types
+
+Added live MB/s to three merge display lines in `othellolevelblasterstatus`,
+each recomputed fresh on every query for interactive monitoring:
+
+- **iMerge**: `iMerge mw[0] D: : 12.34 / 5891.30 GB (2.094%) @ 1247 MB/s`
+- **End-of-level merge**: new dedicated lines per player (white/black) showing
+  GB done / total, %, and MB/s — shown when phase is "Merging to store"
+- **Cascade**: `Cascade white : group 2 / 5 (12.34 GB to temp) @ 892 MB/s`
+
+Added `imergeStartTickMs[MAX_WRITERS]`, `cascadeGroupStartTickMs[2]`, and
+`mergeStartTickMs[2]` to `OthelloTypes.h`. Set via `GetTickCount64()` at merge
+start in `MergeFiles.cpp`. Rate is in uncompressed record bytes / second.
+
+---
+
 ## [0.2.28] - 2026-06-26
 
 ### Fix iMerge progress always showing 0%

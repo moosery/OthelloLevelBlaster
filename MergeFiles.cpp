@@ -286,6 +286,7 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
         }
 
         if (pSt) pSt->cascadeGroupProgressBytes[player] = 0;
+        if (pSt) pSt->cascadeGroupStartTickMs[player]  = GetTickCount64();
 
         LoggerLog("CascadingMerge: %s group %d -> %c: (%d files, %.2f GB input)\n",
                   BLFPlayerStr(player), numTemps + 1, chosenDir[0],
@@ -576,6 +577,7 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
     pSt->imergeActive[0]          = 1;
     pSt->imergeTotalInputBytes[0] = 0;
     pSt->imergeDoneInputBytes[0]  = 0;
+    pSt->imergeStartTickMs[0]     = GetTickCount64();
 
     // Upper bound: MAX_MERGE_FANIN * numWriters writer files + imerge files on F:
     const int kMaxFiles = MAX_MERGE_FANIN * MAX_WRITERS + 1024;
@@ -980,6 +982,7 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
 
     auto mergePlayer = [&](int player)
     {
+        pSt->mergeStartTickMs[player] = GetTickCount64();
         volatile int64_t* pProg = &pSt->mergeProgressBytes[player];
         PlayerData& pd = data[player];
 

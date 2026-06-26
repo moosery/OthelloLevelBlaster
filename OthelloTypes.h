@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.28"
+#define VERSION           "0.2.29"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
@@ -96,6 +96,7 @@ typedef struct __OthelloLevelBlasterState
     const char* currentPhase;       // points to a string literal; set by main thread at each phase transition
     volatile int64_t   mergeProgressBytes[2];   // bytes written per player to final merge output; [0]=white [1]=black
     uint64_t           mergeTotalInputBytes[2]; // total uncompressed record bytes per player; set before merge threads start
+    uint64_t           mergeStartTickMs[2];     // GetTickCount64() when each player's merge thread starts
 
     // Per-player cascade progress — populated when CascadingMerge triggers during DoEndOfLevelMerge.
     // Indexed by BLF_PLAYER_WHITE(0) / BLF_PLAYER_BLACK(1).
@@ -104,6 +105,7 @@ typedef struct __OthelloLevelBlasterState
     int              cascadeNumGroups[2];            // total intermediate groups in this cascade
     int              cascadeGroupsDone[2];           // groups fully written to temp so far
     volatile int64_t cascadeGroupProgressBytes[2];  // bytes written to current group's temp file
+    uint64_t         cascadeGroupStartTickMs[2];    // GetTickCount64() at the start of each cascade group
     uint64_t    currentLevelTotalBoards; // total boards in current level's input file(s); set by GPU feeder before reading starts
 
     // Merge-writer threads: one per NVMe drive, stable thdIdx maps to buffer/dir
@@ -150,6 +152,7 @@ typedef struct __OthelloLevelBlasterState
     int      imergeActive[MAX_WRITERS];
     int64_t  imergeTotalInputBytes[MAX_WRITERS];
     int64_t  imergeDoneInputBytes[MAX_WRITERS];
+    uint64_t imergeStartTickMs[MAX_WRITERS];    // GetTickCount64() when the imerge starts
 
     // Fallback intermediate merge destination on the store drive (used when no
     // medium drive has enough space for even one MAX_MERGE_FANIN batch).
