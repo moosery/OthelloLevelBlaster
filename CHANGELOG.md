@@ -4,6 +4,25 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.28] - 2026-06-26
+
+### Fix iMerge progress always showing 0%
+
+`DoCrossDriveIntermediateMerge` passed `nullptr` for the `pProgressBytes`
+argument to both `KWayMergeFiles` calls, so `imergeDoneInputBytes` was never
+incremented and the stats display always showed `0.000%`.
+
+Also fixed a units mismatch: `imergeTotalInputBytes` was accumulated from
+compressed on-disk file sizes, but `KWayMergeFiles` increments progress by
+`sizeof(BOARD_KEY_DISK)` (16 bytes) per record — uncompressed units.  Now
+`imergeTotalInputBytes` is populated from each file's trailer `recordCount`
+(via `PeekRecordCount`) so both sides use the same uncompressed-byte units.
+
+Changed `imergeTotalInputBytes`/`imergeDoneInputBytes` from `uint64_t` to
+`int64_t` for compatibility with `InterlockedAdd64`.
+
+---
+
 ## [0.2.27] - 2026-06-25
 
 ### iMerge percentage to 3 decimal places

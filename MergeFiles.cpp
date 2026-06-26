@@ -6,10 +6,26 @@
 #include "Logger.h"
 #include "Mem.h"
 #include <windows.h>
+#include <stdio.h>
 #include <algorithm>
 #include <queue>
 #include <thread>
 #include <vector>
+
+// Returns the record count stored in a .blf/.blfz file's trailer, or 0 on failure.
+// Used to convert compressed file sizes to uncompressed-equivalent bytes for
+// imerge progress tracking (KWayMergeFiles counts progress in sizeof(BOARD_KEY_DISK) units).
+static int64_t PeekRecordCount(const char* path)
+{
+    FILE* f = fopen(path, "rb");
+    if (!f) return 0;
+    BlasterFileTrailer trailer = {};
+    _fseeki64(f, -(int64_t)sizeof(trailer), SEEK_END);
+    fread(&trailer, sizeof(trailer), 1, f);
+    fclose(f);
+    if (trailer.magic != BLF_MAGIC && trailer.magic != BLFZ_MAGIC) return 0;
+    return (int64_t)trailer.recordCount;
+}
 
 // ============================================================================
 // Min-heap entry for file-based k-way merge (16-byte disk keys)
@@ -580,8 +596,9 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
         if (!paths || !sizes)
             Fatal(FATAL_ALLOCATION_FAILED, "DoCrossDriveIntermediateMerge: alloc");
 
-        int     numFiles   = 0;
-        int64_t totalBytes = 0;
+        int     numFiles       = 0;
+        int64_t totalBytes     = 0;
+        int64_t totalUncompBytes = 0;
 
         for (int ti = 0; ti < pSt->numMergeWriters && numFiles < kMaxFiles; ti++)
         {
@@ -610,7 +627,8 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
                     Fatal(FATAL_ALLOCATION_FAILED, "DoCrossDriveIntermediateMerge: path alloc");
                 strcpy(paths[numFiles], path);
                 sizes[numFiles] = sz;
-                totalBytes += sz;
+                totalBytes     += sz;
+                totalUncompBytes += PeekRecordCount(path) * (int64_t)sizeof(BOARD_KEY_DISK);
                 numFiles++;
             }
         }
@@ -624,7 +642,7 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
             continue;
         }
 
-        pSt->imergeTotalInputBytes[0] += (uint64_t)totalBytes;
+        pSt->imergeTotalInputBytes[0] += totalUncompBytes;
 
         // Try to reserve space on the first merge drive (F:).
         int  destDirIdx    = -1;
@@ -671,6 +689,7 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
                     paths[numFiles] = tmp[k];               // transfer ownership
                     sizes[numFiles] = (int64_t)tmpSz[k];
                     totalBytes     += (int64_t)tmpSz[k];
+                    pSt->imergeTotalInputBytes[0] += PeekRecordCount(tmp[k]) * (int64_t)sizeof(BOARD_KEY_DISK);
                     numFiles++;
                 }
                 MemFree(tmp);    // free array; elements now owned by paths[]
@@ -703,7 +722,7 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
                       totalBytes / (1024.0 * 1024.0 * 1024.0));
 
             uint64_t unique = KWayMergeFiles(paths, numFiles, outPath,
-                                              nullptr, compress, &pSt->terminateThreads);
+                                              &pSt->imergeDoneInputBytes[0], compress, &pSt->terminateThreads);
 
             // Reclaim Y: overestimate
             int64_t actual = 0;
@@ -758,7 +777,7 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
                       totalBytes / (1024.0 * 1024.0 * 1024.0));
 
             uint64_t unique = KWayMergeFiles(paths, numFiles, outPath,
-                                              nullptr, compress, &pSt->terminateThreads);
+                                              &pSt->imergeDoneInputBytes[0], compress, &pSt->terminateThreads);
 
             int64_t actual = 0;
             if (compress)

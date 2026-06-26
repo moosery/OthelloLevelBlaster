@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.27"
+#define VERSION           "0.2.28"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
@@ -148,8 +148,8 @@ typedef struct __OthelloLevelBlasterState
     // imergeActive[i] is set to 1 before the merge and 0 after; the other fields are
     // populated before imergeActive is set so the stats reader always sees consistent data.
     int      imergeActive[MAX_WRITERS];
-    uint64_t imergeTotalInputBytes[MAX_WRITERS];
-    uint64_t imergeDoneInputBytes[MAX_WRITERS];
+    int64_t  imergeTotalInputBytes[MAX_WRITERS];
+    int64_t  imergeDoneInputBytes[MAX_WRITERS];
 
     // Fallback intermediate merge destination on the store drive (used when no
     // medium drive has enough space for even one MAX_MERGE_FANIN batch).
