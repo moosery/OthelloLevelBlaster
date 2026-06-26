@@ -4,6 +4,14 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.27] - 2026-06-25
+
+### iMerge percentage to 3 decimal places
+
+`StatsListener.cpp`: changed `%.1f%%` to `%.3f%%` in the iMerge progress line.
+
+---
+
 ## [0.2.26] - 2026-06-25
 
 ### Fix Y: write throughput: add 64 MB setvbuf to BLFWriterOpenZ

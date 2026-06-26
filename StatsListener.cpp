@@ -147,7 +147,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
                                      / (double)pSt->imergeTotalInputBytes[i]
                              : 0.0;
             n += snprintf(buf + n, bufSize - n,
-                          "  iMerge mw[%d] %c:       : %.2f / %.2f GB  (%.1f%%)\n",
+                          "  iMerge mw[%d] %c:       : %.2f / %.2f GB  (%.3f%%)\n",
                           i, pSt->mwDirectory[i][0], doneGB, totalGB, pct);
         }
     }
