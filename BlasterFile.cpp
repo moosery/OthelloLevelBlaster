@@ -81,6 +81,7 @@ BLFWriter* BLFWriterOpenZ(const char* path)
     FILE* f = fopen(path, "wb");
     if (!f)
         Fatal(FATAL_FILE_OPEN, "BLFWriterOpenZ: cannot create '%s'", path);
+    setvbuf(f, NULL, _IOFBF, 64 * 1024 * 1024);
 
     BLFWriter* pw = (BLFWriter*)MemMalloc("BLFWriterZ", sizeof(BLFWriter));
     if (!pw) { fclose(f); Fatal(FATAL_ALLOCATION_FAILED, "BLFWriterOpenZ: cannot allocate writer"); }

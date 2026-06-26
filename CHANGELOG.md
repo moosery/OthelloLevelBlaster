@@ -4,6 +4,24 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.26] - 2026-06-25
+
+### Fix Y: write throughput: add 64 MB setvbuf to BLFWriterOpenZ
+
+`BLFWriterOpenZ` had no `setvbuf` call, so each 64 KB `FlushVarBuf` write
+hit the Samba/SMB stack directly — one full round-trip per flush.  At ~5 ms
+SMB latency this caps throughput at ~12 MB/s during intermediate and store
+merges to Y:.
+
+Added `setvbuf(f, NULL, _IOFBF, 64 * 1024 * 1024)` immediately after `fopen`
+in `BLFWriterOpenZ`.  Benchmark (TestThroughputForYDrive, 64 MB trial, 5 min)
+confirmed plateau at ~129 MB/s with 64 MB buffer (vs ~12 MB/s without).
+
+`BLFWriterOpen` (uncompressed, local NVMe) already had 512 KB setvbuf and
+is unaffected.
+
+---
+
 ## [0.2.25] - 2026-06-24
 
 ### Fix MW-drive exhaustion, improve write-failure diagnostics, fix UTF-8 log chars
