@@ -4,6 +4,22 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.30] - 2026-06-28
+
+### Fix drive table column alignment
+
+Widened format specifiers in the `Drv/Dirs/Files/Disk GB/Uncomp GB/Free GB`
+table to handle values seen at L20 scale:
+
+- `%6.2f` → `%9.2f` for Disk GB (overflowed at ≥ 1000 GB, e.g. "4780.74")
+- `%7.2f` → `%9.2f` for Uncomp GB (overflowed at ≥ 10000 GB, e.g. "21132.12")
+- `%7.2f` → `%9.2f` for Free GB (consistent with above)
+- `%3d`   → `%4d`   for Blk / Wht file counts (overflowed at ≥ 1000)
+
+Updated header and separator lines to match new column widths.
+
+---
+
 ## [0.2.29] - 2026-06-26
 
 ### Add MB/s throughput display to all merge types
