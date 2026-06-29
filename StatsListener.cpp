@@ -38,7 +38,7 @@ static void BuildStatusResponse(PSolveContext pCtx, char* buf, int bufSize)
     int64_t elapsedNanos = curDone ? cur->totalNanos
                                    : ClockNanosSinceStart((PClockTick)&cur->startTick);
     uint64_t brdPerSec   = (elapsedNanos > 0)
-                           ? (uint64_t)(cur->boardsReadFromStore * 1000000000LL / elapsedNanos) : 0;
+                           ? (uint64_t)((double)cur->boardsReadFromStore * 1e9 / (double)elapsedNanos) : 0;
     uint64_t nsBrd       = (cur->boardsReadFromStore > 0)
                            ? (uint64_t)(elapsedNanos / (int64_t)cur->boardsReadFromStore) : 0;
     FormatDuration(elapsedNanos, dur, sizeof(dur));

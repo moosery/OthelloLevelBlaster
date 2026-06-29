@@ -4,6 +4,18 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.31] - 2026-06-29
+
+### Fix brd/s integer overflow at large board counts
+
+`boardsReadFromStore * 1000000000LL` overflows uint64_t once boardsReadFromStore
+exceeds ~18.4 billion (hit at L20 with 1.2 trillion boards, displaying 46,786
+instead of ~4.9 million brd/s). Changed to double arithmetic:
+`(double)cur->boardsReadFromStore * 1e9 / (double)elapsedNanos`.
+The `ns/brd` calculation divides and never overflows, so it was already correct.
+
+---
+
 ## [0.2.30] - 2026-06-28
 
 ### Fix drive table column alignment
