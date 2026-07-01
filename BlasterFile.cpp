@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "Mem.h"
 #include "FileAndDirUtils.h"
+#include "lz4frame.h"
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
@@ -44,20 +45,45 @@ struct __BLFWriter
     uint64_t       compBytesTotal;
     uint64_t       prevF0;
     uint64_t       prevF1;
+    // LZ4 layer (.blfzl) — only when lz4Cctx != nullptr
+    LZ4F_cctx*     lz4Cctx;
+    uint8_t*        lz4OutBuf;
+    size_t          lz4OutBufSize;
 };
 
 static void FlushVarBuf(BLFWriter* pw)
 {
     if (pw->varBufPos == 0) return;
-    if (fwrite(pw->varBuf, 1, pw->varBufPos, pw->f) != pw->varBufPos)
+
+    if (pw->lz4Cctx)
     {
-        DWORD err = GetLastError();
-        Fatal(FATAL_FILE_OPEN,
-              "BLFWriterRecord: compressed write failed on '%s' "
-              "(tried %zu bytes, GetLastError=%lu, errno=%d)",
-              pw->path, pw->varBufPos, err, errno);
+        size_t compSize = LZ4F_compressUpdate(pw->lz4Cctx,
+                                               pw->lz4OutBuf, pw->lz4OutBufSize,
+                                               pw->varBuf,    pw->varBufPos, nullptr);
+        if (LZ4F_isError(compSize))
+            Fatal(FATAL_FILE_OPEN,
+                  "FlushVarBuf: LZ4 compress failed on '%s': %s",
+                  pw->path, LZ4F_getErrorName(compSize));
+        if (compSize > 0)
+        {
+            if (fwrite(pw->lz4OutBuf, 1, compSize, pw->f) != compSize)
+                Fatal(FATAL_FILE_OPEN,
+                      "FlushVarBuf: LZ4 write failed on '%s'", pw->path);
+            pw->compBytesTotal += compSize;
+        }
     }
-    pw->compBytesTotal += pw->varBufPos;
+    else
+    {
+        if (fwrite(pw->varBuf, 1, pw->varBufPos, pw->f) != pw->varBufPos)
+        {
+            DWORD err = GetLastError();
+            Fatal(FATAL_FILE_OPEN,
+                  "BLFWriterRecord: compressed write failed on '%s' "
+                  "(tried %zu bytes, GetLastError=%lu, errno=%d)",
+                  pw->path, pw->varBufPos, err, errno);
+        }
+        pw->compBytesTotal += pw->varBufPos;
+    }
     pw->varBufPos = 0;
 }
 
@@ -89,12 +115,60 @@ BLFWriter* BLFWriterOpenZ(const char* path)
     pw->f          = f;
     pw->compressed = true;
     strncpy(pw->path, path, sizeof(pw->path) - 1);
-    pw->varBuf     = (uint8_t*)MemMalloc("BLFWriterZBuf", BLF_COMP_WRITE_BUFFER_SIZE);
+
+    pw->varBuf = (uint8_t*)MemMalloc("BLFWriterZBuf", BLF_COMP_WRITE_BUFFER_SIZE);
     if (!pw->varBuf)
     {
         fclose(f); MemFree(pw);
         Fatal(FATAL_ALLOCATION_FAILED, "BLFWriterOpenZ: cannot allocate write buffer");
     }
+
+    // .blfzl: add LZ4 frame layer on top of varint
+    if (strstr(path, ".blfzl"))
+    {
+        LZ4F_errorCode_t lz4Err = LZ4F_createCompressionContext(&pw->lz4Cctx, LZ4F_VERSION);
+        if (LZ4F_isError(lz4Err))
+        {
+            fclose(f); MemFree(pw->varBuf); MemFree(pw);
+            Fatal(FATAL_ALLOCATION_FAILED,
+                  "BLFWriterOpenZ: LZ4 context create failed on '%s': %s",
+                  path, LZ4F_getErrorName(lz4Err));
+        }
+
+        pw->lz4OutBufSize = LZ4F_compressBound(BLF_COMP_WRITE_BUFFER_SIZE, nullptr)
+                          + LZ4F_HEADER_SIZE_MAX + 32;
+        pw->lz4OutBuf = (uint8_t*)MemMalloc("BLFWriterZLBuf", pw->lz4OutBufSize);
+        if (!pw->lz4OutBuf)
+        {
+            LZ4F_freeCompressionContext(pw->lz4Cctx);
+            fclose(f); MemFree(pw->varBuf); MemFree(pw);
+            Fatal(FATAL_ALLOCATION_FAILED,
+                  "BLFWriterOpenZ: cannot allocate LZ4 output buffer");
+        }
+
+        // Write LZ4 frame header; enable content checksum for integrity verification
+        LZ4F_preferences_t prefs      = {};
+        prefs.frameInfo.contentChecksumFlag = LZ4F_contentChecksumEnabled;
+        size_t headerSize = LZ4F_compressBegin(pw->lz4Cctx,
+                                                pw->lz4OutBuf, pw->lz4OutBufSize, &prefs);
+        if (LZ4F_isError(headerSize))
+        {
+            LZ4F_freeCompressionContext(pw->lz4Cctx);
+            fclose(f); MemFree(pw->lz4OutBuf); MemFree(pw->varBuf); MemFree(pw);
+            Fatal(FATAL_FILE_OPEN,
+                  "BLFWriterOpenZ: LZ4 frame begin failed on '%s': %s",
+                  path, LZ4F_getErrorName(headerSize));
+        }
+        if (fwrite(pw->lz4OutBuf, 1, headerSize, pw->f) != headerSize)
+        {
+            LZ4F_freeCompressionContext(pw->lz4Cctx);
+            fclose(f); MemFree(pw->lz4OutBuf); MemFree(pw->varBuf); MemFree(pw);
+            Fatal(FATAL_FILE_OPEN,
+                  "BLFWriterOpenZ: LZ4 header write failed on '%s'", path);
+        }
+        pw->compBytesTotal += headerSize;
+    }
+
     return pw;
 }
 
@@ -128,6 +202,26 @@ uint64_t BLFWriterClose(BLFWriter* pw, uint64_t* pFileBytes)
     if (pw->compressed)
         FlushVarBuf(pw);
 
+    // End the LZ4 frame (writes end mark + content checksum)
+    if (pw->lz4Cctx)
+    {
+        size_t endSize = LZ4F_compressEnd(pw->lz4Cctx,
+                                           pw->lz4OutBuf, pw->lz4OutBufSize, nullptr);
+        if (LZ4F_isError(endSize))
+            Fatal(FATAL_FILE_OPEN,
+                  "BLFWriterClose: LZ4 frame end failed on '%s': %s",
+                  pw->path, LZ4F_getErrorName(endSize));
+        if (endSize > 0)
+        {
+            if (fwrite(pw->lz4OutBuf, 1, endSize, pw->f) != endSize)
+                Fatal(FATAL_FILE_OPEN,
+                      "BLFWriterClose: LZ4 end write failed on '%s'", pw->path);
+            pw->compBytesTotal += endSize;
+        }
+        LZ4F_freeCompressionContext(pw->lz4Cctx);
+        MemFree(pw->lz4OutBuf);
+    }
+
     BlasterFileTrailer trailer = {};
     trailer.recordCount = pw->count;
     if (pw->hasFirst)
@@ -140,7 +234,7 @@ uint64_t BLFWriterClose(BLFWriter* pw, uint64_t* pFileBytes)
     if (pw->compressed)
     {
         memcpy(trailer._reserved, &pw->compBytesTotal, sizeof(uint64_t));
-        trailer.magic = BLFZ_MAGIC;
+        trailer.magic = strstr(pw->path, ".blfzl") ? BLFZL_MAGIC : BLFZ_MAGIC;
         fileBytes     = pw->compBytesTotal + sizeof(BlasterFileTrailer);
         MemFree(pw->varBuf);
     }
@@ -194,7 +288,7 @@ void BLFWrite(const char* path, const BOARD_KEY_DISK* pKeys, uint64_t count)
 }
 
 // ============================================================
-// BLFReader (handles both .blf and .blfz via magic dispatch)
+// BLFReader (handles .blf, .blfz, and .blfzl via magic dispatch)
 // ============================================================
 struct __BLFReader
 {
@@ -202,7 +296,7 @@ struct __BLFReader
     BlasterFileTrailer trailer;
     uint64_t           recordsRead;
     bool               compressed;
-    // compressed-only
+    // compressed-only (.blfz and .blfzl)
     uint8_t*           compBuf;
     size_t             compBufSize;
     size_t             compBufPos;
@@ -211,10 +305,66 @@ struct __BLFReader
     uint64_t           compBytesConsumed;
     uint64_t           prevF0;
     uint64_t           prevF1;
+    // LZ4 decompression layer (.blfzl only) — nullptr for .blfz
+    LZ4F_dctx*         lz4Dctx;
+    uint8_t*            lz4DecBuf;       // decompressed varint bytes
+    size_t              lz4DecBufSize;
+    size_t              lz4DecBufPos;    // read position in lz4DecBuf
+    size_t              lz4DecBufFilled; // valid bytes in lz4DecBuf
+    bool                lz4FrameDone;    // true after LZ4F_decompress returned 0
 };
 
 static uint8_t BLFZReadByte(BLFReader* r)
 {
+    if (r->lz4Dctx)
+    {
+        // LZ4 path: serve bytes from the decompressed varint buffer.
+        // Refill by decompressing from compBuf (which holds raw LZ4 frame data).
+        while (r->lz4DecBufPos >= r->lz4DecBufFilled)
+        {
+            if (r->lz4FrameDone)
+                Fatal(FATAL_FILE_OPEN,
+                      "BLFZReadByte: read past end of LZ4 frame in '%s'",
+                      r->trailer.magic == BLFZL_MAGIC ? "(blfzl)" : "?");
+
+            // Refill compBuf from disk if empty
+            if (r->compBufPos >= r->compBufFilled)
+            {
+                uint64_t remaining = r->compBytesTotal - r->compBytesConsumed;
+                if (remaining == 0)
+                    Fatal(FATAL_FILE_OPEN,
+                          "BLFZReadByte: LZ4 compressed stream exhausted before frame end");
+                size_t toRead = (remaining < (uint64_t)r->compBufSize)
+                                ? (size_t)remaining : r->compBufSize;
+                r->compBufFilled = fread(r->compBuf, 1, toRead, r->f);
+                r->compBufPos    = 0;
+                if (r->compBufFilled == 0)
+                    Fatal(FATAL_FILE_OPEN, "BLFZReadByte: LZ4 read failed");
+            }
+
+            size_t srcSize = r->compBufFilled - r->compBufPos;
+            size_t dstSize = r->lz4DecBufSize;
+            size_t ret = LZ4F_decompress(r->lz4Dctx,
+                                          r->lz4DecBuf, &dstSize,
+                                          r->compBuf + r->compBufPos, &srcSize,
+                                          nullptr);
+            if (LZ4F_isError(ret))
+                Fatal(FATAL_FILE_OPEN,
+                      "BLFZReadByte: LZ4 decompress error: %s",
+                      LZ4F_getErrorName(ret));
+            r->compBufPos        += srcSize;
+            r->compBytesConsumed += srcSize;
+            r->lz4DecBufPos       = 0;
+            r->lz4DecBufFilled    = dstSize;
+            if (ret == 0)
+                r->lz4FrameDone = true;
+            // dstSize may be 0 when consuming LZ4 overhead (end mark, checksum);
+            // loop again to get the next decompressed chunk.
+        }
+        return r->lz4DecBuf[r->lz4DecBufPos++];
+    }
+
+    // Original varint-only path (.blfz)
     if (r->compBufPos >= r->compBufFilled)
     {
         uint64_t remaining = r->compBytesTotal - r->compBytesConsumed;
@@ -258,11 +408,14 @@ BLFReader* BLFOpen(const char* path)
         return nullptr;
     }
 
-    bool compressed;
+    bool compressed = false;
+    bool lz4        = false;
     if (trailer.magic == BLF_MAGIC)
         compressed = false;
     else if (trailer.magic == BLFZ_MAGIC)
         compressed = true;
+    else if (trailer.magic == BLFZL_MAGIC)
+        { compressed = true; lz4 = true; }
     else
     {
         fclose(f);
@@ -333,6 +486,30 @@ BLFReader* BLFOpen(const char* path)
             Fatal(FATAL_ALLOCATION_FAILED, "BLFOpen: cannot allocate read buffer");
             return nullptr;
         }
+
+        if (lz4)
+        {
+            LZ4F_errorCode_t lz4Err =
+                LZ4F_createDecompressionContext(&r->lz4Dctx, LZ4F_VERSION);
+            if (LZ4F_isError(lz4Err))
+            {
+                fclose(f); MemFree(r->compBuf); MemFree(r);
+                Fatal(FATAL_ALLOCATION_FAILED,
+                      "BLFOpen: LZ4 decomp context failed: %s",
+                      LZ4F_getErrorName(lz4Err));
+                return nullptr;
+            }
+            r->lz4DecBufSize = BLF_COMP_READ_BUFFER_SIZE;
+            r->lz4DecBuf = (uint8_t*)MemMalloc("BLFReaderZLBuf", r->lz4DecBufSize);
+            if (!r->lz4DecBuf)
+            {
+                LZ4F_freeDecompressionContext(r->lz4Dctx);
+                fclose(f); MemFree(r->compBuf); MemFree(r);
+                Fatal(FATAL_ALLOCATION_FAILED,
+                      "BLFOpen: cannot allocate LZ4 decomp buffer");
+                return nullptr;
+            }
+        }
     }
 
     return r;
@@ -376,6 +553,8 @@ void BLFClose(BLFReader** ppReader)
     if (!ppReader || !*ppReader) return;
     BLFReader* r = *ppReader;
     if (r->f) fclose(r->f);
+    if (r->lz4Dctx)   LZ4F_freeDecompressionContext(r->lz4Dctx);
+    if (r->lz4DecBuf)  MemFree(r->lz4DecBuf);
     if (r->compressed && r->compBuf) MemFree(r->compBuf);
     MemFree(r);
     *ppReader = nullptr;

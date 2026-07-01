@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.33"
+#define VERSION           "0.2.34"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
@@ -85,6 +85,7 @@ typedef struct __OthelloLevelBlasterConfig
     char     storeDrive;
     uint16_t statsPort;
     uint8_t  compressMode;         // COMPRESS_NONE / COMPRESS_STORE_ONLY / COMPRESS_ALL
+    char     lz4Drives[64];        // drive letters that get LZ4 on top of varint (e.g. "DEF")
 } OthelloLevelBlasterConfig, *POthelloLevelBlasterConfig;
 
 typedef struct __OthelloLevelBlasterState

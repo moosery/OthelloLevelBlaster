@@ -29,6 +29,8 @@ static void PrintUsage(const char* prog)
     printf("  --compress        Compress all files as .blfz (delta+varint, ~7x smaller) [default]\n");
     printf("  --compress-store-only  Compress only store (Y:) output; MW/imerge stay .blf\n");
     printf("  --no-compress     Write all files as .blf (uncompressed)\n");
+    printf("  --lz4-drives DEF  Drive letters that get LZ4 on top of varint (.blfzl) [default: DEF]\n");
+    printf("                    Only applies when --compress is active. Use \"\" to disable.\n");
     printf("  --help            Show this help\n\n");
     printf("Auto-resume: if storeDir already contains level files from a previous run,\n");
     printf("  the solver automatically resumes from the first missing level.\n");
@@ -45,6 +47,7 @@ static void ParseArgs(int argc, char* argv[])
     strncpy(g_config.useDrives,           "DEFY",                           sizeof(g_config.useDrives)           - 1);
     strncpy(g_config.cacheDirName,        "C:\\OthelloLevelBlaster\\Cache",  sizeof(g_config.cacheDirName)        - 1);
     strncpy(g_config.storeDirNameNoDrive, "\\OthelloLevelBlaster\\Store",    sizeof(g_config.storeDirNameNoDrive) - 1);
+    strncpy(g_config.lz4Drives,           "DEF",                            sizeof(g_config.lz4Drives)           - 1);
 
     for (int i = 1; i < argc; i++)
     {
@@ -68,6 +71,22 @@ static void ParseArgs(int argc, char* argv[])
         else if (strcmp(argv[i], "--no-compress") == 0)
         {
             g_config.compressMode = COMPRESS_NONE;
+        }
+        else if (strcmp(argv[i], "--lz4-drives") == 0)
+        {
+            REQUIRE_NEXT("--lz4-drives")
+            memset(g_config.lz4Drives, 0, sizeof(g_config.lz4Drives));
+            for (const char* p = argv[i]; *p; p++)
+                if (isalpha((unsigned char)*p))
+                {
+                    char ul = (char)toupper((unsigned char)*p);
+                    if (!strchr(g_config.lz4Drives, ul))
+                    {
+                        size_t len = strlen(g_config.lz4Drives);
+                        if (len + 1 < sizeof(g_config.lz4Drives))
+                            g_config.lz4Drives[len] = ul;
+                    }
+                }
         }
         else if (strcmp(argv[i], "--board-size") == 0)
         {

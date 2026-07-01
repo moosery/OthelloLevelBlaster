@@ -11,6 +11,11 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="lz4\lz4.h" />
+    <ClInclude Include="lz4\lz4hc.h" />
+    <ClInclude Include="lz4\lz4frame.h" />
+    <ClInclude Include="lz4\lz4frame_static.h" />
+    <ClInclude Include="lz4\xxhash.h" />
     <ClInclude Include="BlasterFile.h" />
     <ClInclude Include="SortAndDedup.h" />
     <ClInclude Include="CreateSeedFile.h" />
@@ -25,6 +30,10 @@
     <ClInclude Include="OthelloTypes.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="lz4\lz4.c" />
+    <ClCompile Include="lz4\lz4hc.c" />
+    <ClCompile Include="lz4\lz4frame.c" />
+    <ClCompile Include="lz4\xxhash.c" />
     <ClCompile Include="BlasterFile.cpp" />
     <ClCompile Include="SortAndDedup.cpp" />
     <ClCompile Include="CreateSeedFile.cpp" />
@@ -91,7 +100,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;WIN64;_DEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>OthelloBasics;OthelloBasicsForCUDA;BPlusTreeHybrid;Utility;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>OthelloBasics;OthelloBasicsForCUDA;BPlusTreeHybrid;Utility;lz4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>
@@ -111,7 +120,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;WIN64;NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>OthelloBasics;OthelloBasicsForCUDA;BPlusTreeHybrid;Utility;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>OthelloBasics;OthelloBasicsForCUDA;BPlusTreeHybrid;Utility;lz4;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp17</LanguageStandard>
     </ClCompile>
     <Link>

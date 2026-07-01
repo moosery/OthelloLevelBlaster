@@ -23,7 +23,7 @@ static int64_t PeekRecordCount(const char* path)
     _fseeki64(f, -(int64_t)sizeof(trailer), SEEK_END);
     fread(&trailer, sizeof(trailer), 1, f);
     fclose(f);
-    if (trailer.magic != BLF_MAGIC && trailer.magic != BLFZ_MAGIC) return 0;
+    if (trailer.magic != BLF_MAGIC && trailer.magic != BLFZ_MAGIC && trailer.magic != BLFZL_MAGIC) return 0;
     return (int64_t)trailer.recordCount;
 }
 
@@ -293,10 +293,17 @@ static uint64_t CascadingMerge(char** inputPaths, int numInputs,
                   groupSize, groupBytes / (1024.0 * 1024.0 * 1024.0));
 
         char tempPath[MAX_FULL_PATH_NAME];
-        if (compressIntermediate)
-            BLFZNameCascadeTemp(tempPath, sizeof(tempPath), chosenDir, level, player, (*pTempCount)++);
-        else
-            BLFNameCascadeTemp(tempPath, sizeof(tempPath), chosenDir, level, player, (*pTempCount)++);
+        {
+            bool tempLZ4 = pCtx && compressIntermediate
+                        && pCtx->pConfig->lz4Drives[0]
+                        && (strchr(pCtx->pConfig->lz4Drives, chosenDir[0]) != nullptr);
+            if (tempLZ4)
+                BLFZLNameCascadeTemp(tempPath, sizeof(tempPath), chosenDir, level, player, (*pTempCount)++);
+            else if (compressIntermediate)
+                BLFZNameCascadeTemp(tempPath, sizeof(tempPath), chosenDir, level, player, (*pTempCount)++);
+            else
+                BLFNameCascadeTemp(tempPath, sizeof(tempPath), chosenDir, level, player, (*pTempCount)++);
+        }
 
         uint64_t tempUnique = KWayMergeFiles(inputPaths + start, groupSize, tempPath,
                                               pSt ? &pSt->cascadeGroupProgressBytes[player]
@@ -375,7 +382,10 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     bool hasWhite = pSt->mwWhiteSegCount[ti] > 0;
     if (!hasBlack && !hasWhite) return;
 
-    bool compressMW = (pCtx->pConfig->compressMode == COMPRESS_ALL);
+    bool        compressMW = (pCtx->pConfig->compressMode == COMPRESS_ALL);
+    char        mwDL       = pSt->mwDirectory[ti][0];
+    bool        lz4MW      = compressMW && pCtx->pConfig->lz4Drives[0]
+                          && (strchr(pCtx->pConfig->lz4Drives, mwDL) != nullptr);
 
     BOARD_KEY_DISK* mwBuf = (BOARD_KEY_DISK*)pSt->pMWBuffer[ti];
 
@@ -391,7 +401,10 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
         // DoCrossDriveIntermediateMerge relies on this guarantee for safe enumeration.
         int blackFileIdx = pSt->mwBlackFileCount[ti];
         char blackPath[MAX_FULL_PATH_NAME];
-        if (compressMW)
+        if (lz4MW)
+            BLFZLNameWriterFile(blackPath, sizeof(blackPath), pSt->mwDirectory[ti],
+                                BLF_PLAYER_BLACK, blackFileIdx);
+        else if (compressMW)
             BLFZNameWriterFile(blackPath, sizeof(blackPath), pSt->mwDirectory[ti],
                                BLF_PLAYER_BLACK, blackFileIdx);
         else
@@ -429,7 +442,10 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
     {
         int whiteFileIdx = pSt->mwWhiteFileCount[ti];
         char whitePath[MAX_FULL_PATH_NAME];
-        if (compressMW)
+        if (lz4MW)
+            BLFZLNameWriterFile(whitePath, sizeof(whitePath), pSt->mwDirectory[ti],
+                                BLF_PLAYER_WHITE, whiteFileIdx);
+        else if (compressMW)
             BLFZNameWriterFile(whitePath, sizeof(whitePath), pSt->mwDirectory[ti],
                                BLF_PLAYER_WHITE, whiteFileIdx);
         else
@@ -532,9 +548,11 @@ void FlushMergeWriterBuffer(int ti, PSolveContext pCtx)
 
 static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
 {
-    POthelloLevelBlasterState pSt      = pCtx->pState;
-    int                       level    = (int)pSt->playLevel;
-    bool                      compress = (pCtx->pConfig->compressMode == COMPRESS_ALL);
+    POthelloLevelBlasterState  pSt      = pCtx->pState;
+    POthelloLevelBlasterConfig pCfg     = pCtx->pConfig;
+    int                        level    = (int)pSt->playLevel;
+    bool                       compress = (pCfg->compressMode == COMPRESS_ALL);
+    const char*                lz4Drv  = pCfg->lz4Drives;
 
     EnterCriticalSection(&pSt->imergeCS);
 
@@ -604,25 +622,33 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
 
         for (int ti = 0; ti < pSt->numMergeWriters && numFiles < kMaxFiles; ti++)
         {
+            const char* writerDir = pSt->mwDirectory[ti];
+            char        writerDL  = writerDir[0];
+            bool        writerLZ4 = compress && lz4Drv[0]
+                                 && (strchr(lz4Drv, writerDL) != nullptr);
+
             for (int idx = consumedArr[ti]; idx < snapArr[ti] && numFiles < kMaxFiles; idx++)
             {
                 char path[MAX_FULL_PATH_NAME];
-                if (compress)
-                    BLFZNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
-                else
-                    BLFNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
-
                 WIN32_FILE_ATTRIBUTE_DATA fad = {};
-                if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad))
-                {
-                    // Try the other compression variant (e.g. mixed-mode run)
-                    if (compress)
-                        BLFNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
-                    else
-                        BLFZNameWriterFile(path, sizeof(path), pSt->mwDirectory[ti], player, idx);
-                    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad))
-                        continue;  // empty flush was deleted — skip this index
+                bool found = false;
+
+                // Try expected format first, then fall back for mixed-mode / transition runs.
+                if (writerLZ4 && !found) {
+                    BLFZLNameWriterFile(path, sizeof(path), writerDir, player, idx);
+                    found = GetFileAttributesExA(path, GetFileExInfoStandard, &fad) != 0;
                 }
+                if (compress && !found) {
+                    BLFZNameWriterFile(path, sizeof(path), writerDir, player, idx);
+                    found = GetFileAttributesExA(path, GetFileExInfoStandard, &fad) != 0;
+                }
+                if (!found) {
+                    BLFNameWriterFile(path, sizeof(path), writerDir, player, idx);
+                    found = GetFileAttributesExA(path, GetFileExInfoStandard, &fad) != 0;
+                }
+                if (!found)
+                    continue;  // empty flush was deleted — skip this index
+
                 int64_t sz = ((int64_t)fad.nFileSizeHigh << 32) | (int64_t)fad.nFileSizeLow;
                 paths[numFiles] = (char*)MemMalloc("xdimPath", strlen(path) + 1);
                 if (!paths[numFiles])
@@ -680,12 +706,30 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
                 if (!tmp || !tmpSz)
                     Fatal(FATAL_ALLOCATION_FAILED, "DoCrossDriveIntermediateMerge: imerge enum");
 
-                if (compress)
-                    BLFZPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[d], level, player);
-                else
-                    BLFPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[d], level, player);
+                char mDL   = pSt->mergeDirectory[d][0];
+                bool mLZ4  = compress && lz4Drv[0] && (strchr(lz4Drv, mDL) != nullptr);
+                int  extra = 0;
+                int  room  = kMaxFiles - numFiles;
 
-                int extra = EnumerateByPattern(pat, tmp, kMaxFiles - numFiles, &iBytes, tmpSz);
+                if (mLZ4 && extra < room) {
+                    uint64_t ib = 0;
+                    BLFZLPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[d], level, player);
+                    extra += EnumerateByPattern(pat, tmp + extra, room - extra, &ib, tmpSz + extra);
+                    iBytes += ib;
+                }
+                if (compress && extra < room) {
+                    uint64_t ib = 0;
+                    BLFZPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[d], level, player);
+                    extra += EnumerateByPattern(pat, tmp + extra, room - extra, &ib, tmpSz + extra);
+                    iBytes += ib;
+                }
+                if (extra < room) {
+                    uint64_t ib = 0;
+                    BLFPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[d], level, player);
+                    extra += EnumerateByPattern(pat, tmp + extra, room - extra, &ib, tmpSz + extra);
+                    iBytes += ib;
+                }
+
                 for (int k = 0; k < extra && numFiles < kMaxFiles; k++)
                 {
                     paths[numFiles] = tmp[k];               // transfer ownership
@@ -712,12 +756,19 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
             int fileIdx = (int)InterlockedExchangeAdd(pCount, 1);
 
             char outPath[MAX_FULL_PATH_NAME];
-            if (compress)
-                BLFZNameImergeFile(outPath, sizeof(outPath), pSt->storeMergeDirectory,
-                                   level, player, fileIdx);
-            else
-                BLFNameImergeFile(outPath, sizeof(outPath), pSt->storeMergeDirectory,
-                                  level, player, fileIdx);
+            {
+                char   yDL  = pSt->storeMergeDirectory[0];
+                bool   yLZ4 = compress && lz4Drv[0] && (strchr(lz4Drv, yDL) != nullptr);
+                if (yLZ4)
+                    BLFZLNameImergeFile(outPath, sizeof(outPath), pSt->storeMergeDirectory,
+                                        level, player, fileIdx);
+                else if (compress)
+                    BLFZNameImergeFile(outPath, sizeof(outPath), pSt->storeMergeDirectory,
+                                       level, player, fileIdx);
+                else
+                    BLFNameImergeFile(outPath, sizeof(outPath), pSt->storeMergeDirectory,
+                                      level, player, fileIdx);
+            }
 
             LoggerLog("DoCrossDriveIntermediateMerge: total flush %s -> '%s' (%d files, %.2f GB)\n",
                       BLFPlayerStr(player), outPath, numFiles,
@@ -767,12 +818,19 @@ static void DoCrossDriveIntermediateMerge(PSolveContext pCtx)
             int fileIdx = (int)InterlockedExchangeAdd(pCount, 1);
 
             char outPath[MAX_FULL_PATH_NAME];
-            if (compress)
-                BLFZNameImergeFile(outPath, sizeof(outPath), pSt->mergeDirectory[destDirIdx],
-                                   level, player, fileIdx);
-            else
-                BLFNameImergeFile(outPath, sizeof(outPath), pSt->mergeDirectory[destDirIdx],
-                                  level, player, fileIdx);
+            {
+                char   iDL  = pSt->mergeDirectory[destDirIdx][0];
+                bool   iLZ4 = compress && lz4Drv[0] && (strchr(lz4Drv, iDL) != nullptr);
+                if (iLZ4)
+                    BLFZLNameImergeFile(outPath, sizeof(outPath), pSt->mergeDirectory[destDirIdx],
+                                        level, player, fileIdx);
+                else if (compress)
+                    BLFZNameImergeFile(outPath, sizeof(outPath), pSt->mergeDirectory[destDirIdx],
+                                       level, player, fileIdx);
+                else
+                    BLFNameImergeFile(outPath, sizeof(outPath), pSt->mergeDirectory[destDirIdx],
+                                      level, player, fileIdx);
+            }
 
             LoggerLog("DoCrossDriveIntermediateMerge: %s -> '%s' (%d files, %.2f GB)\n",
                       BLFPlayerStr(player), outPath, numFiles,
@@ -885,6 +943,15 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                                                kMaxInputFiles - numFiles, &d,
                                                data[player].inputSizes + numFiles);
                 playerBytes += d;
+                if (numFiles < kMaxInputFiles && pCfg->lz4Drives[0])
+                {
+                    d = 0;
+                    BLFZLPatternWriterFiles(pat, sizeof(pat), pSt->mwDirectory[i], player);
+                    numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
+                                                   kMaxInputFiles - numFiles, &d,
+                                                   data[player].inputSizes + numFiles);
+                    playerBytes += d;
+                }
             }
         }
         for (int i = 0; i < pSt->numMergeDirs && numFiles < kMaxInputFiles; i++)
@@ -903,6 +970,15 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                                                kMaxInputFiles - numFiles, &d,
                                                data[player].inputSizes + numFiles);
                 playerBytes += d;
+                if (numFiles < kMaxInputFiles && pCfg->lz4Drives[0])
+                {
+                    d = 0;
+                    BLFZLPatternImergeFiles(pat, sizeof(pat), pSt->mergeDirectory[i], level, player);
+                    numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
+                                                   kMaxInputFiles - numFiles, &d,
+                                                   data[player].inputSizes + numFiles);
+                    playerBytes += d;
+                }
             }
         }
         if (numFiles < kMaxInputFiles)
@@ -921,6 +997,15 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                                                kMaxInputFiles - numFiles, &d,
                                                data[player].inputSizes + numFiles);
                 playerBytes += d;
+                if (numFiles < kMaxInputFiles && pCfg->lz4Drives[0])
+                {
+                    d = 0;
+                    BLFZLPatternImergeFiles(pat, sizeof(pat), pSt->storeMergeDirectory, level, player);
+                    numFiles += EnumerateByPattern(pat, data[player].inputPaths + numFiles,
+                                                   kMaxInputFiles - numFiles, &d,
+                                                   data[player].inputSizes + numFiles);
+                    playerBytes += d;
+                }
             }
         }
 

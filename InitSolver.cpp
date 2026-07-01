@@ -477,6 +477,10 @@ void InitSolver(POthelloLevelBlasterConfig pConfig, POthelloLevelBlasterState pS
               pConfig->compressMode == COMPRESS_ALL        ? "all files .blfz (delta+varint compressed)" :
               pConfig->compressMode == COMPRESS_STORE_ONLY ? "store .blfz, MW/imerge .blf" :
                                                              "all files .blf (uncompressed)");
+    if (pConfig->compressMode == COMPRESS_ALL && pConfig->lz4Drives[0])
+        LoggerLog("  LZ4 drives         : %s (varint+LZ4 -> .blfzl)\n", pConfig->lz4Drives);
+    else if (pConfig->compressMode == COMPRESS_ALL)
+        LoggerLog("  LZ4 drives         : (none)\n");
     LoggerLog("  Ping-pong buf      : %.1f MB\n",
               pState->pingPongBufferSize / (1024.0 * 1024.0));
     LoggerLog("  MW buf             : %.1f GB x %d threads\n",

@@ -4,6 +4,27 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.34] - 2026-07-01
+
+### Add LZ4 frame compression layer for D:/E:/F: files (.blfzl)
+
+Writer files on NVMe drives and intermediate merge (imerge/cascade temp) files on F:
+are now written with an additional LZ4 frame wrapping the existing delta+zigzag+varint
+stream, producing `.blfzl` files. Store files on Y: remain `.blfz` (ZFS on the
+Proxmox NAS already applies transparent LZ4 compression with better ratio than any
+application-layer pass would add).
+
+LZ4 is applied per drive via the new `--lz4-drives` argument (default `DEF`). Drive Y:
+is excluded by default. The third file magic `BLFZL_MAGIC` is written to the trailer so
+the reader auto-detects the format without any external configuration. A content
+checksum in the LZ4 frame catches corruption at read time.
+
+Implementation: new `BlasterFile.cpp` writer/reader paths using the LZ4 frame API
+(LZ4F_cctx / LZ4F_dctx); `BlasterFileName.h` BLFZL naming functions; `MergeFiles.cpp`
+drive-letter-aware dispatch to BLFZL/BLFZ/BLF at all output and enumeration sites.
+
+---
+
 ## [0.2.33] - 2026-07-01
 
 ### Maximize MW buffer size for larger in-memory dedup window

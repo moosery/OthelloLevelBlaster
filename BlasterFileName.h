@@ -171,6 +171,48 @@ static inline void BLFZNameCascadeTemp(char* out, size_t outSize,
              dir, level, BLFPlayerStr(player), fileIdx);
 }
 
+// ── LZ4-compressed writer files (.blfzl) ─────────────────────────────────────
+// varint + LZ4 frame; used on drives listed in lz4Drives config.
+// Store files stay .blfz (ZFS on Y: handles additional compression).
+
+static inline void BLFZLNameWriterFile(char* out, size_t outSize,
+                                        const char* dir, int player, int fileIdx)
+{
+    snprintf(out, outSize, "%s\\writer_%s_%04d.blfzl",
+             dir, BLFPlayerStr(player), fileIdx);
+}
+
+static inline void BLFZLPatternWriterFiles(char* out, size_t outSize,
+                                            const char* dir, int player)
+{
+    snprintf(out, outSize, "%s\\writer_%s_*.blfzl", dir, BLFPlayerStr(player));
+}
+
+// ── LZ4-compressed intermediate merge files (.blfzl) ─────────────────────────
+
+static inline void BLFZLNameImergeFile(char* out, size_t outSize,
+                                        const char* dir, int level, int player, int fileIdx)
+{
+    snprintf(out, outSize, "%s\\imerge_L%03d_%s_%04d.blfzl",
+             dir, level, BLFPlayerStr(player), fileIdx);
+}
+
+static inline void BLFZLPatternImergeFiles(char* out, size_t outSize,
+                                            const char* dir, int level, int player)
+{
+    snprintf(out, outSize, "%s\\imerge_L%03d_%s_*.blfzl",
+             dir, level, BLFPlayerStr(player));
+}
+
+// ── LZ4-compressed cascade temp files (.blfzl) ───────────────────────────────
+
+static inline void BLFZLNameCascadeTemp(char* out, size_t outSize,
+                                         const char* dir, int level, int player, int fileIdx)
+{
+    snprintf(out, outSize, "%s\\cascade_temp_L%03d_%s_%04d.blfzl",
+             dir, level, BLFPlayerStr(player), fileIdx);
+}
+
 // ── Level sentinel files (storeDir) ─────────────────────────────────────────
 // Zero-byte markers written to storeDir to track merge state.
 //   Level_NNNN_merging  — created at the START of DoEndOfLevelMerge

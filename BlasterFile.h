@@ -60,7 +60,11 @@ void BLFWrite(const char* path, const BOARD_KEY_DISK* pKeys, uint64_t count);
 
 // Second magic value: delta+varint compressed store file.
 // _reserved[0..7] in the trailer stores the compressed byte count (uint64_t LE).
-#define BLFZ_MAGIC 0x5A46494C54534C42ULL   // "BLSTFILZ" in little-endian ASCII
+#define BLFZ_MAGIC  0x5A46494C54534C42ULL   // "BLSTFILZ" in little-endian ASCII
+
+// Third magic value: delta+varint compressed then LZ4-framed (.blfzl).
+// Same trailer layout as .blfz; body is an LZ4 frame wrapping the varint stream.
+#define BLFZL_MAGIC 0x4C5A46494C54534CULL   // "LSTFILZL" in little-endian ASCII
 
 typedef struct __BLFWriter BLFWriter;
 
