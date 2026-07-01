@@ -4,6 +4,29 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.33] - 2026-07-01
+
+### Maximize MW buffer size for larger in-memory dedup window
+
+Previously each merge-writer thread used `GPU_VRAM × 80%` (12.8 GB) as its buffer
+size, leaving ~26.6 GB of RAM allocated as a "store buffer" that is never actually
+used. `MAX_MW_SEGS` was 8, capping accumulation at 8 GPU flushes regardless of
+how much space remained.
+
+Each MW buffer does an in-memory k-way merge across all accumulated GPU-flush
+segments before writing to disk, removing duplicates found there. Larger buffer
+→ more GPU flushes accumulated per disk write → wider dedup window → fewer unique
+boards reach disk → fewer files on D:/E: → fewer imerge triggers → smaller
+end-of-level merge.
+
+Fix: count fast drives first, then divide `(availableRAM − 1 GB)` evenly across
+them. With 52 GB budgeted and 2 fast drives this raises each thread's buffer from
+12.8 GB to ~25.6 GB, roughly doubling the number of GPU flushes accumulated per
+disk write. `MAX_MW_SEGS` raised from 8 to 32 so the segment-count limit no longer
+fires before the space limit.
+
+---
+
 ## [0.2.32] - 2026-07-01
 
 ### Fix end-of-level merge crash: Y: ledger exhaustion when storeMerge files are on Y:

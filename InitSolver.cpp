@@ -58,18 +58,16 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
 
     availableMemoryToAllocate -= pState->pingPongBufferSize;
 
-    // Each merge-writer buffer must comfortably hold several worst-case GPU flushes.
-    // Worst-case GPU flush ≈ 80% of VRAM.  Using the full 80% as the buffer size
-    // lets us accumulate 2–3 GPU flushes (each ~4.4 GB) before writing to disk.
-    const size_t mwBufSize     = pMachineInfo->g_gpuInfo.totalGlobalMemBytes * 8 / 10;
     const size_t kMinStoreBuf  = 1ULL * 1024 * 1024 * 1024;   // 1 GB floor
+    // GPU-based minimum per thread: must hold at least one worst-case GPU flush.
+    const size_t gpuMinBufSize = pMachineInfo->g_gpuInfo.totalGlobalMemBytes * 8 / 10;
 
-    if (availableMemoryToAllocate < mwBufSize + kMinStoreBuf)
+    if (availableMemoryToAllocate < gpuMinBufSize + kMinStoreBuf)
         Fatal(FATAL_INSUFFICIENT_MEMORY,
               "Not enough RAM for even one merge-writer buffer (%zu GB) plus store buffer.",
-              mwBufSize / (1024 * 1024 * 1024));
+              gpuMinBufSize / (1024 * 1024 * 1024));
 
-    int memCapWriters = (int)((availableMemoryToAllocate - kMinStoreBuf) / mwBufSize);
+    // Count fast drives first so we can maximize the per-thread MW buffer.
     int numFastDrives = 0;
     for (int i = 0; i < pMachineInfo->g_drives.numDrives; i++)
     {
@@ -79,7 +77,27 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
             numFastDrives++;
     }
 
-    int numWritersToCreate = (numFastDrives < memCapWriters) ? numFastDrives : memCapWriters;
+    // Maximize MW buffer size: a larger buffer accumulates more GPU flushes before a
+    // disk write, widening the in-memory dedup window and reducing how much data reaches
+    // disk — fewer files, less imerge pressure, smaller end-of-level merge.
+    // Divide all available RAM (minus kMinStoreBuf) evenly across fast drives.
+    // Fall back to the GPU-sized minimum and cap writer count when memory is tight.
+    size_t mwBufSize;
+    int numWritersToCreate;
+    if (numFastDrives > 0 &&
+        (availableMemoryToAllocate - kMinStoreBuf) / (size_t)numFastDrives >= gpuMinBufSize)
+    {
+        numWritersToCreate = numFastDrives;
+        mwBufSize = (availableMemoryToAllocate - kMinStoreBuf) / (size_t)numWritersToCreate;
+    }
+    else
+    {
+        // RAM-constrained: keep gpuMinBufSize per thread and cap writer count.
+        mwBufSize = gpuMinBufSize;
+        numWritersToCreate = (int)((availableMemoryToAllocate - kMinStoreBuf) / mwBufSize);
+        if (numWritersToCreate > numFastDrives) numWritersToCreate = numFastDrives;
+    }
+
     if (numWritersToCreate < 1)
         Fatal(FATAL_INSUFFICIENT_MEMORY, "No fast drives available for merge-writer threads.");
 
@@ -145,8 +163,8 @@ static void computeState(POthelloLevelBlasterConfig pConfig, POthelloLevelBlaste
                                 * sizeof(BOARD_KEY_DISK) + 2 * sizeof(uint32_t);
     pState->gpuAccumCapacity  = (gpuBudget - expandBytes) / 57;
 
-    // Merge-writer buffers: one per thread, fixed at mwBufSize.
-    // Store buffer gets whatever RAM remains.
+    // Merge-writer buffers: one per thread, sized to fill available RAM (see mwBufSize above).
+    // Store buffer gets what remains — approximately kMinStoreBuf.
     pState->mwBufferSize  = mwBufSize;
     pState->storeBufferSize =
         ((availableMemoryToAllocate - mwBufSize * (size_t)pState->numMergeWriters) / 1024) * 1024;

@@ -1,7 +1,7 @@
 #pragma once
 #include "Utility.h"
 
-#define VERSION           "0.2.32"
+#define VERSION           "0.2.33"
 // Compression mode for BLF output files.
 #define COMPRESS_NONE       0   // all files uncompressed (.blf)
 #define COMPRESS_STORE_ONLY 1   // only store (Y:) output compressed (.blfz); MW/imerge stay .blf
@@ -10,7 +10,7 @@
 #define MAX_WRITERS       30
 #define MAX_WRITER_DRIVES 26    // at most one entry per drive letter
 #define MAX_LEVELS        256   // covers up to 16x16 board (252 levels)
-#define MAX_MW_SEGS       8     // max GPU flush segments per merge-writer buffer
+#define MAX_MW_SEGS       32    // max GPU flush segments per merge-writer buffer
 
 // Maximum number of files opened simultaneously for a single-color k-way merge.
 // The cross-drive intermediate merge fires when total unconsumed writer files
