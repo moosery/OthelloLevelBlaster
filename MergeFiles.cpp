@@ -851,6 +851,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
         uint64_t    unique;
         int64_t     storeReservation; // bytes pre-reserved on Y: for final output
         int64_t     actualBytes;      // actual bytes written to the output file
+        int64_t     yInputBytes;      // Y: storeMerge input bytes pre-reclaimed before Phase 1b
+        bool        yInputsPreReclaimed; // true when yInputBytes were reclaimed early
     };
     PlayerData data[2] = {};  // indexed by BLF_PLAYER_WHITE(0) / BLF_PLAYER_BLACK(1)
 
@@ -947,6 +949,29 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
     // inside CascadingMerge (filling F: first, spilling to Y: only as needed).
     // All reservations are atomic so both threads can run safely in parallel.
 
+    // Pre-reclaim Y: storeMerge inputs before reserving outputs.  Both players'
+    // storeMerge files live on Y: and are already counted in the ledger.
+    // Reserving output space for both players simultaneously would double-count
+    // that space (input bytes + output bytes) and exhaust the ledger.  Since the
+    // inputs will be deleted when the merge completes, we reclaim them now and
+    // skip the per-file DriveReclaim in the merge thread for these files.
+    for (int player = BLF_PLAYER_WHITE; player <= BLF_PLAYER_BLACK; player++)
+    {
+        PlayerData& pd = data[player];
+        pd.yInputBytes         = 0;
+        pd.yInputsPreReclaimed = false;
+        for (int i = 0; i < pd.numFiles; i++)
+        {
+            if (pd.inputPaths[i][0] == pCfg->storeDrive)
+                pd.yInputBytes += (int64_t)pd.inputSizes[i];
+        }
+        if (pd.yInputBytes > 0)
+        {
+            DriveReclaim(pSt, pCfg->storeDrive, pd.yInputBytes);
+            pd.yInputsPreReclaimed = true;
+        }
+    }
+
     for (int player = BLF_PLAYER_WHITE; player <= BLF_PLAYER_BLACK; player++)
     {
         PlayerData& pd      = data[player];
@@ -1013,7 +1038,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                     Fatal(FATAL_FILE_OPEN,
                           "EndOfLevelMerge: cannot move '%s' -> '%s' (err %lu)",
                           pd.inputPaths[0], outPath, GetLastError());
-                DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
+                if (!pd.yInputsPreReclaimed)
+                    DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
                 int64_t actual = (int64_t)(pd.unique * sizeof(BOARD_KEY_DISK)
                                  + sizeof(BlasterFileTrailer));
                 DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
@@ -1026,7 +1052,8 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
                 pd.unique = KWayMergeFiles(pd.inputPaths, 1, outPath, pProg, true,
                                            &pSt->terminateThreads);
                 DeleteFileA(pd.inputPaths[0]);
-                DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
+                if (!pd.yInputsPreReclaimed)
+                    DriveReclaim(pSt, pd.inputPaths[0][0], (int64_t)pd.inputSizes[0]);
                 WIN32_FILE_ATTRIBUTE_DATA fad = {};
                 int64_t actual = 0;
                 if (GetFileAttributesExA(outPath, GetFileExInfoStandard, &fad))
@@ -1060,9 +1087,11 @@ void DoEndOfLevelMerge(PSolveContext pCtx)
             DriveReclaim(pSt, pCfg->storeDrive, pd.storeReservation - actual);
 
             // Reclaim source-file drive space as each input is deleted.
+            // Skip Y: inputs that were pre-reclaimed in Phase 1b.
             for (int i = 0; i < pd.numFiles; i++)
             {
-                DriveReclaim(pSt, pd.inputPaths[i][0], (int64_t)pd.inputSizes[i]);
+                if (!pd.yInputsPreReclaimed || pd.inputPaths[i][0] != pCfg->storeDrive)
+                    DriveReclaim(pSt, pd.inputPaths[i][0], (int64_t)pd.inputSizes[i]);
                 DeleteFileA(pd.inputPaths[i]);
             }
         }

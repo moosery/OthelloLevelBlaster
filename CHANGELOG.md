@@ -4,6 +4,26 @@ All notable changes to OthelloLevelBlaster are documented here.
 
 ---
 
+## [0.2.32] - 2026-07-01
+
+### Fix end-of-level merge crash: Y: ledger exhaustion when storeMerge files are on Y:
+
+`DoEndOfLevelMerge` crashed at L20 with "black store output needs 4430.36 GB on
+Y: (587.28 GB available)" even though Y: had ~8 TB free.
+
+Root cause: both total-flush storeMerge files (white ~3391 GB + black ~4430 GB)
+live on Y: and are already debited in the drive ledger. Phase 1b then reserved Y:
+for BOTH output files simultaneously, double-counting that space: the inputs
+(already on Y:) plus the outputs (also going to Y:) exceeded the ledger, even
+though the inputs would be freed by the merge itself.
+
+Fix: before Phase 1b reservations, pre-reclaim Y: storeMerge input bytes from
+the ledger for each player (committing to delete them). This gives the ledger
+room for both output reservations to succeed. In the merge thread, skip the
+per-file DriveReclaim for Y: inputs that were already pre-reclaimed.
+
+---
+
 ## [0.2.31] - 2026-06-29
 
 ### Fix brd/s integer overflow at large board counts
